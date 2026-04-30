@@ -1,0 +1,14 @@
+[package]
+name = "remoteway-proto"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Protocol types and serialization (no_std compatible)"
+
+[dependencies]
+zerocopy = { version = "0.8", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+proptest = "1"

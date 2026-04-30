@@ -1,0 +1,64 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(push_constant) uniform PushConstants {
+    uint width;
+    uint height;
+    float t;
+    uint block_size;
+    uint search_radius;
+} pc;
+
+layout(set = 0, binding = 0) readonly buffer FrameA { uint frame_a[]; };
+layout(set = 0, binding = 1) readonly buffer FrameB { uint frame_b[]; };
+layout(set = 0, binding = 2) writeonly buffer MotionVectors { vec2 motion[]; };
+
+float luma(uint pixel) {
+    float b = float(pixel & 0xFFu);
+    float g = float((pixel >> 8u) & 0xFFu);
+    float r = float((pixel >> 16u) & 0xFFu);
+    return 0.299 * r + 0.587 * g + 0.114 * b;
+}
+
+void main() {
+    uint bx = gl_GlobalInvocationID.x;
+    uint by = gl_GlobalInvocationID.y;
+    uint bs = pc.block_size;
+    uint blocks_x = (pc.width + bs - 1u) / bs;
+    uint blocks_y = (pc.height + bs - 1u) / bs;
+    if (bx >= blocks_x || by >= blocks_y) return;
+
+    uint ox = bx * bs;
+    uint oy = by * bs;
+    int sr = int(pc.search_radius);
+
+    int best_dx = 0;
+    int best_dy = 0;
+    float best_sad = 1e30;
+
+    for (int sdy = -sr; sdy <= sr; sdy++) {
+        for (int sdx = -sr; sdx <= sr; sdx++) {
+            float sad = 0.0;
+            for (uint py = 0u; py < bs; py++) {
+                for (uint px = 0u; px < bs; px++) {
+                    int ax = int(ox + px);
+                    int ay = int(oy + py);
+                    int bxx = ax + sdx;
+                    int byy = ay + sdy;
+                    if (ax >= 0 && ax < int(pc.width) && ay >= 0 && ay < int(pc.height) &&
+                        bxx >= 0 && bxx < int(pc.width) && byy >= 0 && byy < int(pc.height)) {
+                        float la = luma(frame_a[uint(ay) * pc.width + uint(ax)]);
+                        float lb = luma(frame_b[uint(byy) * pc.width + uint(bxx)]);
+                        sad += abs(la - lb);
+                    }
+                }
+            }
+            if (sad < best_sad) {
+                best_sad = sad;
+                best_dx = sdx;
+                best_dy = sdy;
+            }
+        }
+    }
+    motion[by * blocks_x + bx] = vec2(float(best_dx), float(best_dy));
+}

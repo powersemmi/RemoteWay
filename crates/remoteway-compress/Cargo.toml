@@ -1,0 +1,32 @@
+[package]
+name = "remoteway-compress"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Delta encoding, LZ4/zstd pipeline, SIMD"
+
+[dependencies]
+remoteway-core = { path = "../remoteway-core" }
+remoteway-proto = { path = "../remoteway-proto" }
+lz4_flex = "0.11"
+zstd = { version = "0.13", optional = true }
+rayon = "1"
+wide = "0.7"
+thiserror = "2"
+
+tracy-client = { workspace = true, optional = true }
+
+[features]
+default = ["lz4"]
+lz4 = []
+tracy = ["dep:tracy-client"]
+zstd-backend = ["dep:zstd"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1"
+
+[[bench]]
+name = "bench_compress"
+harness = false

@@ -1,0 +1,23 @@
+[package]
+name = "remoteway-transport"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "SSH multiplexed protocol over stdin/stdout"
+
+[dependencies]
+remoteway-core = { path = "../remoteway-core" }
+remoteway-proto = { path = "../remoteway-proto" }
+tokio = { version = "1", features = ["full"] }
+thiserror = "2"
+tracing = "0.1"
+zerocopy = { version = "0.8", features = ["derive"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1"
+
+[[bench]]
+name = "bench_transport"
+harness = false

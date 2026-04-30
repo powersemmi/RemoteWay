@@ -1,0 +1,24 @@
+[package]
+name = "remoteway-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+remoteway-proto = { path = "../crates/remoteway-proto" }
+remoteway-transport = { path = "../crates/remoteway-transport" }
+zerocopy = "0.8"
+
+[[bin]]
+name = "fuzz_frame_header"
+path = "fuzz_targets/fuzz_frame_header.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_stream_parser"
+path = "fuzz_targets/fuzz_stream_parser.rs"
+doc = false

@@ -1,0 +1,34 @@
+[package]
+name = "remoteway-capture"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "wlr-screencopy, ext-image-capture, damage tracking"
+
+[dependencies]
+remoteway-core = { path = "../remoteway-core" }
+remoteway-compress = { path = "../remoteway-compress" }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-scanner = "0.31"
+nix = { version = "0.29", features = ["mman", "fs"] }
+rtrb = "0.3"
+wayland-backend = "0.3"
+bitflags = "2"
+tracing = "0.1"
+thiserror = "2"
+zbus = { version = "5", optional = true, default-features = false, features = ["tokio"] }
+serde = { version = "1", optional = true }
+pipewire = { version = "0.9", optional = true }
+tokio = { version = "1", optional = true, features = ["rt", "time"] }
+futures-util = { version = "0.3", optional = true, default-features = false }
+
+[features]
+gnome = ["dep:zbus", "dep:serde", "dep:pipewire", "dep:tokio", "dep:futures-util"]
+
+[dev-dependencies]
+wayland-server = "0.31"
+wayland-protocols = { version = "0.32", features = ["server", "unstable"] }
+wayland-protocols-wlr = { version = "0.3", features = ["server"] }

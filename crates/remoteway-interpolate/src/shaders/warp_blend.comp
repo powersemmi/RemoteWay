@@ -1,0 +1,84 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(push_constant) uniform PushConstants {
+    uint width;
+    uint height;
+    float t;
+    uint block_size;
+    uint search_radius;
+} pc;
+
+layout(set = 0, binding = 0) readonly buffer FrameA { uint frame_a[]; };
+layout(set = 0, binding = 1) readonly buffer FrameB { uint frame_b[]; };
+layout(set = 0, binding = 2) readonly buffer MotionVectors { vec2 motion[]; };
+layout(set = 0, binding = 3) writeonly buffer Output { uint output_data[]; };
+
+uint bilinear_sample(uint buf_idx, uint w, uint h, float fx, float fy) {
+    int x0 = clamp(int(floor(fx)), 0, int(w) - 1);
+    int y0 = clamp(int(floor(fy)), 0, int(h) - 1);
+    int x1 = clamp(x0 + 1, 0, int(w) - 1);
+    int y1 = clamp(y0 + 1, 0, int(h) - 1);
+    float dx = fx - floor(fx);
+    float dy = fy - floor(fy);
+
+    uint p00, p10, p01, p11;
+    if (buf_idx == 0u) {
+        p00 = frame_a[uint(y0) * w + uint(x0)];
+        p10 = frame_a[uint(y0) * w + uint(x1)];
+        p01 = frame_a[uint(y1) * w + uint(x0)];
+        p11 = frame_a[uint(y1) * w + uint(x1)];
+    } else {
+        p00 = frame_b[uint(y0) * w + uint(x0)];
+        p10 = frame_b[uint(y0) * w + uint(x1)];
+        p01 = frame_b[uint(y1) * w + uint(x0)];
+        p11 = frame_b[uint(y1) * w + uint(x1)];
+    }
+
+    uint result = 0u;
+    for (uint shift = 0u; shift < 32u; shift += 8u) {
+        float c00 = float((p00 >> shift) & 0xFFu);
+        float c10 = float((p10 >> shift) & 0xFFu);
+        float c01 = float((p01 >> shift) & 0xFFu);
+        float c11 = float((p11 >> shift) & 0xFFu);
+        float top = c00 * (1.0 - dx) + c10 * dx;
+        float bot = c01 * (1.0 - dx) + c11 * dx;
+        float val = clamp(top * (1.0 - dy) + bot * dy, 0.0, 255.0);
+        result |= uint(val) << shift;
+    }
+    return result;
+}
+
+void main() {
+    uint px = gl_GlobalInvocationID.x;
+    uint py = gl_GlobalInvocationID.y;
+    if (px >= pc.width || py >= pc.height) return;
+
+    uint bs = pc.block_size;
+    uint blocks_x = (pc.width + bs - 1u) / bs;
+    uint bx = px / bs;
+    uint by = py / bs;
+    vec2 mv = motion[by * blocks_x + bx];
+
+    float t = pc.t;
+    float inv_t = 1.0 - t;
+
+    // Warp from A forward and B backward.
+    float src_ax = float(px) + mv.x * t;
+    float src_ay = float(py) + mv.y * t;
+    float src_bx = float(px) - mv.x * inv_t;
+    float src_by = float(py) - mv.y * inv_t;
+
+    uint ca = bilinear_sample(0u, pc.width, pc.height, src_ax, src_ay);
+    uint cb = bilinear_sample(1u, pc.width, pc.height, src_bx, src_by);
+
+    // Blend channels.
+    uint result = 0u;
+    for (uint shift = 0u; shift < 32u; shift += 8u) {
+        float va = float((ca >> shift) & 0xFFu);
+        float vb = float((cb >> shift) & 0xFFu);
+        result |= uint(clamp(va * inv_t + vb * t, 0.0, 255.0)) << shift;
+    }
+
+    output_data[py * pc.width + px] = result;
+}

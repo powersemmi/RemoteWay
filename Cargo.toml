@@ -1,0 +1,30 @@
+[workspace]
+members = [
+    "crates/remoteway-proto",
+    "crates/remoteway-core",
+    "crates/remoteway-capture",
+    "crates/remoteway-compress",
+    "crates/remoteway-transport",
+    "crates/remoteway-input",
+    "crates/remoteway-display",
+    "crates/remoteway-interpolate",
+    "crates/remoteway-server",
+    "crates/remoteway-client",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+authors = ["Victor Maleca <powersemmi@gmail.com>"]
+license = "MIT"
+
+[workspace.dependencies]
+tracy-client = { version = "0.17", default-features = false, features = ["enable"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = false

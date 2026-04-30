@@ -1,0 +1,19 @@
+#version 450
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PushConstants {
+    uint count; // total flow vectors = flow_w * flow_h
+} pc;
+
+// Raw f16 flow data from VK_NV_optical_flow (R16G16_SFLOAT packed as uint32).
+layout(set = 0, binding = 0) readonly buffer FlowInput { uint flow_data[]; };
+// f32 motion vectors for warp/blend shader.
+layout(set = 0, binding = 1) writeonly buffer MotionOutput { vec2 motion[]; };
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.count) return;
+
+    // unpackHalf2x16: uint32 (two packed f16) → vec2 of f32.
+    motion[idx] = unpackHalf2x16(flow_data[idx]);
+}

@@ -1,0 +1,21 @@
+[package]
+name = "remoteway-display"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Client: wl_shm, surface management, cursor overlay"
+
+[dependencies]
+remoteway-core = { path = "../remoteway-core" }
+remoteway-proto = { path = "../remoteway-proto" }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }
+nix = { version = "0.29", features = ["mman", "fs"] }
+rtrb = "0.3"
+tracing = "0.1"
+thiserror = "2"
+
+[dev-dependencies]
+wayland-server = "0.31"
+wayland-protocols = { version = "0.32", features = ["server", "unstable", "staging"] }
