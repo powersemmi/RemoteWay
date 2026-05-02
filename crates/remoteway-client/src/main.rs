@@ -9,7 +9,7 @@ use remoteway_display::DisplayThreadConfig;
 use remoteway_input::capture_thread::InputCaptureConfig;
 use remoteway_interpolate::{BackendDetector, InterpolationManager};
 use remoteway_transport::ssh_transport::SshTransport;
-use tracing::info;
+use tracing::{debug, info};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -20,6 +20,7 @@ mod pipeline;
 #[cfg(feature = "tracy")]
 use tracy_client::Client as TracyClient;
 
+#[allow(clippy::expect_used)]
 fn main() -> Result<()> {
     // SAFETY: mlockall with MCL_CURRENT|MCL_FUTURE prevents page faults on hot path.
     // Must be called before any pipeline threads are spawned.
@@ -39,8 +40,11 @@ fn main() -> Result<()> {
 
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("remoteway=info".parse().unwrap()),
+            tracing_subscriber::EnvFilter::from_default_env().add_directive(
+                "remoteway=info"
+                    .parse()
+                    .context("BUG: hardcoded directive must parse")?,
+            ),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -83,12 +87,17 @@ async fn run(cli: cli::Cli) -> Result<()> {
 
     // Send client handshake.
     let handshake_data = pipeline::build_handshake();
-    sender.send_anchor(handshake_data);
+    if !sender.send_anchor(handshake_data) {
+        tracing::warn!("failed to send anchor frame (transport closed)");
+    }
     info!("handshake sent, waiting for server...");
 
     // Wait for server handshake.
     if let Some(msg) = transport.recv().await {
-        if msg.header.msg_type() == Ok(remoteway_proto::header::MsgType::Handshake) {
+        if matches!(
+            msg.header.msg_type(),
+            Ok(remoteway_proto::header::MsgType::Handshake)
+        ) {
             info!("server handshake received");
         } else {
             anyhow::bail!("expected handshake, got msg_type={}", {
@@ -102,7 +111,9 @@ async fn run(cli: cli::Cli) -> Result<()> {
     // Send target resolution if requested.
     if let Some(res) = &cli.resolution {
         let msg = pipeline::build_target_resolution(res.width, res.height);
-        sender.send_anchor(msg);
+        if !sender.send_anchor(msg) {
+            tracing::warn!("failed to send target resolution frame (transport closed)");
+        }
         info!(
             width = res.width,
             height = res.height,
@@ -185,7 +196,10 @@ async fn run(cli: cli::Cli) -> Result<()> {
     }
 
     // Kill SSH child if still running.
-    let _ = child.kill().await;
+    if let Err(e) = child.kill().await {
+        // Child likely already exited — non-critical during shutdown
+        debug!("failed to kill SSH child (already exited?): {e}");
+    }
 
     info!("remoteway-client stopped");
     Ok(())
@@ -207,14 +221,14 @@ mod tests {
         /// User explicitly disabled interpolation with `--no-interpolate`.
         Disabled,
         /// User selected a specific backend with `--interpolation-backend`.
-        Explicit(remoteway_interpolate::backend::BackendKind),
+        Explicit(BackendKind),
         /// Auto-detect the best available backend.
         AutoDetect,
     }
 
     fn determine_interpolation_mode(
         no_interpolate: bool,
-        interpolation_backend: Option<remoteway_interpolate::backend::BackendKind>,
+        interpolation_backend: Option<BackendKind>,
     ) -> InterpolationMode {
         if no_interpolate {
             InterpolationMode::Disabled

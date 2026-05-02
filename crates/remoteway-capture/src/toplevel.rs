@@ -9,9 +9,13 @@ use crate::error::CaptureError;
 /// Information about a toplevel (window) on the remote compositor.
 #[derive(Debug, Clone)]
 pub struct ToplevelInfo {
+    /// Window title.
     pub title: String,
+    /// Application identifier (e.g., "org.mozilla.firefox").
     pub app_id: String,
+    /// Whether the window is currently activated (focused).
     pub activated: bool,
+    /// Whether the window is minimized.
     pub minimized: bool,
 }
 
@@ -33,12 +37,16 @@ impl ToplevelTracker {
             current: None,
         };
 
-        display.get_registry(&qh, ());
-        event_queue.roundtrip(&mut state)?;
+        // The WlRegistry is not stored — globals arrive as events
+        // dispatched through the queue.
+        let _registry = display.get_registry(&qh, ());
+        let dispatched = event_queue.roundtrip(&mut state)?;
+        tracing::trace!(dispatched, "toplevel enumerate: first roundtrip");
 
         // If the manager was found, do another round-trip to get toplevel events.
         if state.manager.is_some() {
-            event_queue.roundtrip(&mut state)?;
+            let dispatched = event_queue.roundtrip(&mut state)?;
+            tracing::trace!(dispatched, "toplevel enumerate: second roundtrip");
         }
 
         // Finalize last pending toplevel.
@@ -51,10 +59,14 @@ impl ToplevelTracker {
         })
     }
 
+    /// All discovered toplevels.
+    #[must_use]
     pub fn toplevels(&self) -> &[ToplevelInfo] {
         &self.toplevels
     }
 
+    /// Find a toplevel by its `app_id`.
+    #[must_use]
     pub fn find_by_app_id(&self, app_id: &str) -> Option<&ToplevelInfo> {
         self.toplevels.iter().find(|t| t.app_id == app_id)
     }
@@ -299,7 +311,7 @@ mod tests {
         }
         // Without WAYLAND_DISPLAY, connect_to_env should fail,
         // which means ToplevelTracker::enumerate would also fail.
-        let conn_result = wayland_client::Connection::connect_to_env();
+        let conn_result = Connection::connect_to_env();
         assert!(conn_result.is_err());
     }
 }

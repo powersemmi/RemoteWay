@@ -1,15 +1,20 @@
 use std::collections::HashMap;
 
+use remoteway_proto::ProtoError;
 use remoteway_proto::header::FrameHeader;
 use thiserror::Error;
 use zerocopy::{FromBytes, IntoBytes};
 
+/// Errors that can occur during frame parsing and multiplexing.
 #[derive(Debug, Error)]
 pub enum MultiplexerError {
-    #[error("unknown message type: {0}")]
-    UnknownMsgType(u8),
+    /// The message type byte is not recognised.
+    #[error("protocol error: {0}")]
+    UnknownMsgType(#[from] ProtoError),
+    /// The payload length exceeds [`MAX_PAYLOAD_LEN`].
     #[error("payload too large: {0} bytes")]
     PayloadTooLarge(u32),
+    /// An underlying I/O error occurred.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -17,10 +22,12 @@ pub enum MultiplexerError {
 /// Maximum allowed payload per frame chunk (4 MiB).
 pub const MAX_PAYLOAD_LEN: u32 = 4 * 1024 * 1024;
 
-/// A demultiplexed message received from the wire.
+/// A fully reassembled message received from the wire.
 #[derive(Debug)]
 pub struct IncomingMessage {
+    /// The frame header (`msg_type`, `flags`, `stream_id`, etc.).
     pub header: FrameHeader,
+    /// The reassembled payload bytes.
     pub payload: Vec<u8>,
 }
 
@@ -36,11 +43,13 @@ pub fn encode_frame(header: &FrameHeader, payload: &[u8], dst: &mut Vec<u8>) {
 /// complete [`IncomingMessage`]s found in the buffer.
 pub struct StreamParser {
     buf: Vec<u8>,
-    /// In-progress reassembly of chunked payloads, keyed by stream_id.
+    /// In-progress reassembly of chunked payloads, keyed by `stream_id`.
     chunks: HashMap<u16, Vec<u8>>,
 }
 
 impl StreamParser {
+    /// Create a new empty stream parser.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             buf: Vec::with_capacity(64 * 1024),
@@ -58,7 +67,7 @@ impl StreamParser {
                 break;
             }
             let hdr = *FrameHeader::ref_from_bytes(&self.buf[..FrameHeader::SIZE])
-                .expect("slice is exactly FrameHeader::SIZE bytes");
+                .map_err(|_| ProtoError::UnknownMsgType(0))?;
 
             let payload_len = { hdr.payload_len } as usize;
             if payload_len > MAX_PAYLOAD_LEN as usize {
@@ -71,10 +80,17 @@ impl StreamParser {
             }
 
             let payload = self.buf[FrameHeader::SIZE..total].to_vec();
-            self.buf.drain(..total);
+            // INTENTIONAL: drain returns an iterator we don't need; the side-effect of
+            // removing consumed bytes from the buffer is all we care about.
+            let _drained = self.buf.drain(..total);
+            // Drop the Drain iterator immediately so the mutable borrow on `self.buf`
+            // is released before `self.reassemble` below.
+            drop(_drained);
 
             // Validate msg_type before accepting.
-            let _ = hdr.msg_type().map_err(MultiplexerError::UnknownMsgType)?;
+            // INTENTIONAL: we only care about the validation side-effect;
+            // the `MsgType` discriminant is already embedded in `hdr`.
+            let _msg_type = hdr.msg_type()?;
 
             let msg = self.reassemble(hdr, payload)?;
             if let Some(m) = msg {
@@ -122,6 +138,7 @@ impl StreamParser {
     }
 
     /// Number of streams currently being reassembled.
+    #[must_use]
     pub fn in_progress_streams(&self) -> usize {
         self.chunks.len()
     }

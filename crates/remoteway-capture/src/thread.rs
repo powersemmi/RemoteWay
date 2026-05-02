@@ -13,7 +13,7 @@ use crate::error::CaptureError;
 pub struct CaptureThreadConfig {
     /// CPU core to pin the thread to.
     pub core_id: usize,
-    /// SCHED_FIFO priority (typically 90 for capture).
+    /// `SCHED_FIFO` priority (typically 90 for capture).
     pub sched_priority: u8,
     /// SPSC ring buffer capacity for frames.
     pub ring_capacity: usize,
@@ -106,7 +106,22 @@ impl CaptureThread {
     pub fn stop(&mut self) {
         self.stop_flag.store(true, Ordering::Release);
         if let Some(handle) = self.join_handle.take() {
-            let _ = handle.join();
+            match handle.join() {
+                Ok(Ok(())) => {
+                    tracing::debug!("capture thread exited cleanly");
+                }
+                Ok(Err(e)) => {
+                    tracing::error!(error = %e, "capture thread exited with error");
+                }
+                Err(panic) => {
+                    let msg = panic
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| panic.downcast_ref::<String>().map(|s| s.as_str()))
+                        .unwrap_or("<unknown>");
+                    tracing::error!(panic_msg = msg, "capture thread panicked");
+                }
+            }
         }
     }
 }

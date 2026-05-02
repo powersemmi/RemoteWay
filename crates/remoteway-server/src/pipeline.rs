@@ -166,8 +166,7 @@ pub fn create_capture_backend_for_child(
         CaptureBackendArg::Portal => {
             // Portal cannot diff against `known_identifiers` (the picker dialog
             // shows the user the full window list). The user picks the new
-            // window manually.
-            let _ = known_identifiers;
+            // window manually. known_identifiers is dropped naturally here.
             try_portal_window().context("failed to create portal capture backend (window)")
         }
     }
@@ -349,7 +348,9 @@ pub fn compress_send_loop(
         let (frame_data, frame_w, frame_h, frame_stride): (&[u8], u32, u32, u32) =
             if let Some((tw, th)) = unpack_resolution(cur_target) {
                 if tw < frame.width || th < frame.height {
-                    downscale_nearest(
+                    // dst_stride is always tw * 4; computed explicitly below
+                    // for clarity rather than using the return value.
+                    let _ = downscale_nearest(
                         &frame.data,
                         frame.width,
                         frame.height,
@@ -515,7 +516,7 @@ pub async fn recv_dispatch_loop(
                 debug!(?other, "ignoring unexpected message type");
             }
             Err(unknown) => {
-                warn!(msg_type = unknown, "unknown message type");
+                warn!(%unknown, "unknown message type");
             }
         }
     }

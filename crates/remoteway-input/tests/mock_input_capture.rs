@@ -12,7 +12,7 @@ use wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, ListeningSocket, New,
 };
 
-/// Mutex to serialize tests that modify the WAYLAND_DISPLAY env var.
+/// Mutex to serialize tests that modify the `WAYLAND_DISPLAY` env var.
 static WAYLAND_DISPLAY_LOCK: Mutex<()> = Mutex::new(());
 
 struct MockCaptureCompositor {
@@ -120,6 +120,7 @@ impl CaptureMock {
         let listener = ListeningSocket::bind(&socket_name).unwrap();
 
         let old_display = std::env::var("WAYLAND_DISPLAY").ok();
+        // SAFETY: test mock helper.
         unsafe { std::env::set_var("WAYLAND_DISPLAY", &socket_name) };
 
         let stop = Arc::new(AtomicBool::new(false));
@@ -131,10 +132,10 @@ impl CaptureMock {
             let mut dh = display.handle();
             while !stop_server.load(Ordering::Relaxed) {
                 if let Ok(Some(stream)) = listener.accept() {
-                    let _ = dh.insert_client(stream, Arc::new(()));
+                    dh.insert_client(stream, Arc::new(())).ok();
                 }
-                let _ = display.dispatch_clients(&mut compositor);
-                let _ = display.flush_clients();
+                display.dispatch_clients(&mut compositor).ok();
+                display.flush_clients().ok();
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         });
@@ -154,10 +155,12 @@ impl Drop for CaptureMock {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(h) = self.server_thread.take() {
-            let _ = h.join();
+            h.join().ok();
         }
         match self.old_display.take() {
+            // SAFETY: test mock helper.
             Some(val) => unsafe { std::env::set_var("WAYLAND_DISPLAY", val) },
+            // SAFETY: test mock helper.
             None => unsafe { std::env::remove_var("WAYLAND_DISPLAY") },
         }
     }

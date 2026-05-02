@@ -35,19 +35,30 @@ fn portal_id_path() -> PathBuf {
 /// Load a previously saved portal session identifier.
 fn load_portal_id() -> Option<String> {
     let path = portal_id_path();
-    std::fs::read_to_string(&path)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    match std::fs::read_to_string(&path) {
+        Ok(s) => {
+            let trimmed = s.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        }
+        Err(e) => {
+            tracing::debug!(err = %e, path = %path.to_string_lossy(), "no saved portal id found");
+            None
+        }
+    }
 }
 
 /// Save a portal session identifier for future use.
 fn save_portal_id(identifier: &str) {
     let path = portal_id_path();
     let path_str = path.to_string_lossy();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!(err = %e, "failed to create portal id directory");
+        }
     if let Err(e) = std::fs::write(&path, identifier) {
         tracing::warn!(err = %e, path = %path_str, "failed to save portal identifier");
     } else {
@@ -57,9 +68,9 @@ fn save_portal_id(identifier: &str) {
 
 /// Result of a successful portal screencast session.
 pub struct PortalSession {
-    /// PipeWire file descriptor for connecting to the PipeWire daemon.
+    /// `PipeWire` file descriptor for connecting to the `PipeWire` daemon.
     pub pw_fd: std::os::fd::OwnedFd,
-    /// PipeWire node ID of the screencast stream.
+    /// `PipeWire` node ID of the screencast stream.
     pub pw_node_id: u32,
     /// Stream size reported by the portal (may be used as fallback).
     pub stream_width: u32,
@@ -93,8 +104,9 @@ pub async fn create_screencast_session(
 
     // 1. CreateSession
     let mut create_opts: HashMap<&str, Value<'_>> = HashMap::new();
-    create_opts.insert("handle_token", Value::from("remoteway_create"));
-    create_opts.insert("session_handle_token", Value::from("remoteway_session"));
+    // INTENTIONAL: inserting into empty HashMap, previous value always None
+    let _ = create_opts.insert("handle_token", Value::from("remoteway_create"));
+    let _ = create_opts.insert("session_handle_token", Value::from("remoteway_session"));
 
     let create_results = portal_request(
         &connection,
@@ -116,14 +128,16 @@ pub async fn create_screencast_session(
     };
 
     let mut select_opts: HashMap<&str, Value<'_>> = HashMap::new();
-    select_opts.insert("handle_token", Value::from("remoteway_select"));
-    select_opts.insert("types", Value::U32(source_types));
-    select_opts.insert("multiple", Value::Bool(false));
+    // INTENTIONAL: inserting into empty HashMap, previous value always None
+    let _ = select_opts.insert("handle_token", Value::from("remoteway_select"));
+    let _ = select_opts.insert("types", Value::U32(source_types));
+    let _ = select_opts.insert("multiple", Value::Bool(false));
     // Persist mode = 1: remember the selection so the dialog is skipped
     // on subsequent runs after the user authorizes once.
-    select_opts.insert("persist_mode", Value::U32(1));
+    let _ = select_opts.insert("persist_mode", Value::U32(1));
 
-    portal_request(
+    // INTENTIONAL: error propagated via ?, result HashMap not needed for SelectSources
+    let _ = portal_request(
         &connection,
         "SelectSources",
         &(&session_handle, select_opts),
@@ -137,12 +151,13 @@ pub async fn create_screencast_session(
     // GNOME uses "identifier", KDE uses "restore_token".
     let saved_id = load_portal_id();
     let mut start_opts: HashMap<&str, Value<'_>> = HashMap::new();
-    start_opts.insert("handle_token", Value::from("remoteway_start"));
+    // INTENTIONAL: inserting into empty HashMap, previous value always None
+    let _ = start_opts.insert("handle_token", Value::from("remoteway_start"));
     if let Some(ref id) = saved_id {
         // Pass as both identifier and restore_token — the portal backend
         // will use whichever it understands.
-        start_opts.insert("identifier", Value::from(id.as_str()));
-        start_opts.insert("restore_token", Value::from(id.as_str()));
+        let _ = start_opts.insert("identifier", Value::from(id.as_str()));
+        let _ = start_opts.insert("restore_token", Value::from(id.as_str()));
         tracing::info!(%id, "using saved portal token to skip dialog");
     }
 
@@ -176,7 +191,7 @@ pub async fn create_screencast_session(
         pw_node_id,
         stream_width,
         stream_height,
-        "portal screencast PipeWire node"
+        "portal screencast `PipeWire` node"
     );
 
     // 4. OpenPipeWireRemote — returns a file descriptor directly (not Request/Response).
@@ -240,7 +255,8 @@ where
     let mut stream = zbus::MessageStream::from(connection);
 
     // Make the portal method call.
-    connection
+    // INTENTIONAL: error propagated via ?, reply body not needed (we wait for Response signal)
+    let _ = connection
         .call_method(
             Some("org.freedesktop.portal.Desktop"),
             "/org/freedesktop/portal/desktop",
@@ -294,7 +310,7 @@ where
     }
 }
 
-/// Extract `session_handle` from the CreateSession Response results.
+/// Extract `session_handle` from the `CreateSession` Response results.
 fn extract_session_handle(
     connection: &Connection,
     results: &HashMap<String, OwnedValue>,
@@ -339,7 +355,7 @@ fn extract_quoted_path(debug: &str) -> Option<&str> {
     Some(&inner[..end])
 }
 
-/// Extract PipeWire node_id from the Start Response results.
+/// Extract `PipeWire` `node_id` from the Start Response results.
 fn extract_pw_node_id(results: &HashMap<String, OwnedValue>) -> Result<u32, CaptureError> {
     let streams = results
         .get("streams")
@@ -356,7 +372,7 @@ fn extract_pw_node_id(results: &HashMap<String, OwnedValue>) -> Result<u32, Capt
     })
 }
 
-/// Parse PipeWire node_id from the debug string of zvariant streams value.
+/// Parse `PipeWire` `node_id` from the debug string of zvariant streams value.
 /// The format is typically: `Value(Array([Structure([U32(42), Dict(...)]), ...]))`
 /// We look for the first U32 value.
 fn parse_node_id_from_streams(s: &str) -> Option<u32> {

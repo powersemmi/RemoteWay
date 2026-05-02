@@ -22,8 +22,11 @@ pub struct ShmFrameUploader {
     active: usize,
     /// Tracks which buffers the compositor has released.
     released: [bool; 2],
+    /// Frame width in pixels.
     pub width: u32,
+    /// Frame height in pixels.
     pub height: u32,
+    /// Bytes per row (may be > width * 4 due to padding).
     pub stride: u32,
 }
 
@@ -80,7 +83,8 @@ impl ShmFrameUploader {
         let map = unsafe {
             nix::sys::mman::mmap(
                 None,
-                std::num::NonZero::new(total_size).unwrap(),
+                #[allow(clippy::expect_used)]
+                std::num::NonZero::new(total_size).expect("total_size > 0"),
                 ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
                 MapFlags::MAP_SHARED,
                 &fd,
@@ -89,6 +93,9 @@ impl ShmFrameUploader {
             .map_err(|e| DisplayError::ShmBuffer(format!("mmap failed: {e}")))?
         };
 
+        // SAFETY: total_size > 0 checked above, alignment is page-aligned.
+        #[allow(clippy::unwrap_used)]
+        // madvise is an optimization hint; failure is non-critical.
         // SAFETY: map is valid and covers total_size bytes.
         unsafe {
             let _ = madvise(map, total_size, MmapAdvise::MADV_SEQUENTIAL);
@@ -150,6 +157,7 @@ impl ShmFrameUploader {
     }
 
     /// Get the active (back) buffer for attaching to a surface.
+    #[must_use]
     pub fn active_buffer(&self) -> &wl_buffer::WlBuffer {
         &self.buffers[self.active]
     }
@@ -168,11 +176,13 @@ impl ShmFrameUploader {
     }
 
     /// Check if the active (back) buffer has been released and can be written to.
+    #[must_use]
     pub fn can_upload(&self) -> bool {
         self.released[self.active]
     }
 
     /// Single buffer size in bytes.
+    #[must_use]
     pub fn buffer_size(&self) -> usize {
         self.stride as usize * self.height as usize
     }
@@ -185,6 +195,7 @@ impl Drop for ShmFrameUploader {
         self.pool.destroy();
 
         // SAFETY: map was created with mmap of map_size bytes.
+        // INTENTIONAL: munmap failure during cleanup is not actionable.
         unsafe {
             let _ = munmap(self.map, self.map_size);
         }
@@ -194,13 +205,19 @@ impl Drop for ShmFrameUploader {
 /// A rectangular damage region indicating which part of the frame changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DamageRegion {
+    /// Left edge in pixels.
     pub x: u32,
+    /// Top edge in pixels.
     pub y: u32,
+    /// Width in pixels.
     pub width: u32,
+    /// Height in pixels.
     pub height: u32,
 }
 
 impl DamageRegion {
+    /// Create a new `DamageRegion`.
+    #[must_use]
     pub fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
         Self {
             x,
@@ -210,6 +227,8 @@ impl DamageRegion {
         }
     }
 
+    /// Total number of pixels in this region.
+    #[must_use]
     pub fn pixel_count(&self) -> usize {
         self.width as usize * self.height as usize
     }
@@ -406,7 +425,7 @@ mod tests {
         assert_eq!(result.unwrap(), 7680 * 1080);
     }
 
-    /// Total size overflow detection: buf_size * 2 (double buffering).
+    /// Total size overflow detection: `buf_size` * 2 (double buffering).
     #[test]
     fn total_size_overflow_detection() {
         let buf_size = 7680usize * 1080;
@@ -418,7 +437,6 @@ mod tests {
     /// Zero-size buffer is rejected.
     #[test]
     fn zero_size_buffer_rejected() {
-        let _width = 0u32;
         let height = 0u32;
         let stride = 0u32;
         let buf_size = (stride as usize).checked_mul(height as usize).unwrap_or(0);
@@ -459,7 +477,7 @@ mod tests {
         assert!(released[active]);
     }
 
-    /// Mark released out of bounds does nothing (matches the guard in mark_released).
+    /// Mark released out of bounds does nothing (matches the guard in `mark_released`).
     #[test]
     fn mark_released_out_of_bounds() {
         let mut released = [true, true];
@@ -472,7 +490,7 @@ mod tests {
         assert!(released[1]);
     }
 
-    /// can_upload reflects the released state of the active buffer.
+    /// `can_upload` reflects the released state of the active buffer.
     #[test]
     fn can_upload_logic() {
         let active = 0usize;

@@ -10,11 +10,11 @@ fuzz_target!(|data: &[u8]| {
     if data.len() >= FrameHeader::SIZE {
         if let Ok(hdr) = FrameHeader::ref_from_bytes(&data[..FrameHeader::SIZE]) {
             // Access packed fields (forces copy, must not panic).
-            let _ = hdr.msg_type();
-            let _ = hdr.stream_id;
-            let _ = hdr.flags;
-            let _ = hdr.payload_len;
-            let _ = hdr.timestamp_ns;
+            hdr.msg_type();
+            hdr.stream_id;
+            hdr.flags;
+            hdr.payload_len;
+            hdr.timestamp_ns;
         }
     }
 });

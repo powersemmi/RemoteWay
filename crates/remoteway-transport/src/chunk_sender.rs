@@ -52,6 +52,7 @@ pub fn split_into_chunks(
 }
 
 /// Number of chunks that would be produced for a given payload length.
+#[must_use]
 pub fn chunk_count(payload_len: usize, chunk_size: usize) -> usize {
     if payload_len == 0 || chunk_size == 0 {
         return 1;

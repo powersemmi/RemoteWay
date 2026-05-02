@@ -8,15 +8,22 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 pub struct ResizePayload {
+    /// Surface ID being resized.
     pub surface_id: u16,
+    /// Alignment padding; always zero.
     pub _pad: u16,
+    /// New width in pixels.
     pub width: u32,
+    /// New height in pixels.
     pub height: u32,
 }
 
 impl ResizePayload {
+    /// Size of `ResizePayload` in bytes (always 12).
     pub const SIZE: usize = size_of::<Self>();
 
+    /// Create a new resize notification.
+    #[must_use]
     pub fn new(surface_id: u16, width: u32, height: u32) -> Self {
         Self {
             surface_id,

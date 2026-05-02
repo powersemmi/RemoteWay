@@ -12,12 +12,19 @@ use crate::shm::DamageRegion;
 /// A frame ready for display on a specific surface.
 #[must_use]
 pub struct DisplayFrame {
+    /// Target surface identifier.
     pub surface_id: u16,
+    /// Pixel data (decompressed).
     pub data: Vec<u8>,
+    /// Damage regions for partial updates.
     pub damage: Vec<DamageRegion>,
+    /// Frame width in pixels.
     pub width: u32,
+    /// Frame height in pixels.
     pub height: u32,
+    /// Bytes per row.
     pub stride: u32,
+    /// Capture timestamp in nanoseconds.
     pub timestamp_ns: u64,
 }
 
@@ -25,7 +32,7 @@ pub struct DisplayFrame {
 pub struct DisplayThreadConfig {
     /// CPU core to pin the thread to.
     pub core_id: usize,
-    /// SCHED_FIFO priority (0 = default scheduler, typically low for display).
+    /// `SCHED_FIFO` priority (0 = default scheduler, typically low for display).
     pub sched_priority: u8,
     /// SPSC ring buffer capacity for incoming frames.
     pub ring_capacity: usize,
@@ -91,7 +98,17 @@ impl DisplayThread {
     pub fn stop(&mut self) {
         self.stop_flag.store(true, Ordering::Release);
         if let Some(handle) = self.join_handle.take() {
-            let _ = handle.join();
+            match handle.join() {
+                Ok(result) => {
+                    if let Err(ref e) = result {
+                        tracing::warn!("display thread exited with error: {e}");
+                    }
+                }
+                Err(_) => {
+                    // Thread panicked — the panic payload is opaque.
+                    tracing::error!("display thread panicked during shutdown");
+                }
+            }
         }
     }
 
@@ -343,7 +360,7 @@ mod tests {
     /// Test rtrb SPSC ring buffer behavior directly (the underlying mechanism).
     #[test]
     fn rtrb_push_pop_basic() {
-        let (mut producer, mut consumer) = rtrb::RingBuffer::<DisplayFrame>::new(4);
+        let (mut producer, mut consumer) = RingBuffer::<DisplayFrame>::new(4);
 
         let frame = DisplayFrame {
             surface_id: 1,
@@ -366,7 +383,7 @@ mod tests {
     /// Ring buffer full behavior: push returns error when full.
     #[test]
     fn rtrb_ring_full() {
-        let (mut producer, _consumer) = rtrb::RingBuffer::<DisplayFrame>::new(2);
+        let (mut producer, _consumer) = RingBuffer::<DisplayFrame>::new(2);
 
         let make_frame = |id: u16| DisplayFrame {
             surface_id: id,
@@ -390,7 +407,7 @@ mod tests {
     /// Drain ring: only the latest frame matters (display loop behavior).
     #[test]
     fn rtrb_drain_keeps_latest() {
-        let (mut producer, mut consumer) = rtrb::RingBuffer::<DisplayFrame>::new(8);
+        let (mut producer, mut consumer) = RingBuffer::<DisplayFrame>::new(8);
 
         let make_frame = |id: u16| DisplayFrame {
             surface_id: id,
@@ -418,10 +435,10 @@ mod tests {
         assert_eq!(latest.timestamp_ns, 4000);
     }
 
-    /// slots() reports how many items can be written.
+    /// `slots()` reports how many items can be written.
     #[test]
     fn rtrb_slots_tracking() {
-        let (mut producer, mut consumer) = rtrb::RingBuffer::<DisplayFrame>::new(4);
+        let (mut producer, mut consumer) = RingBuffer::<DisplayFrame>::new(4);
 
         let initial_slots = producer.slots();
         assert_eq!(initial_slots, 4);
@@ -439,14 +456,14 @@ mod tests {
         assert_eq!(producer.slots(), 3);
 
         // Pop frees a slot.
-        let _ = consumer.pop().unwrap();
+        consumer.pop().unwrap();
         assert_eq!(producer.slots(), 4);
     }
 
-    /// send_frame maps to producer.push — returns true if queued, false if full.
+    /// `send_frame` maps to producer.push — returns true if queued, false if full.
     #[test]
     fn send_frame_returns_false_when_full() {
-        let (mut producer, _consumer) = rtrb::RingBuffer::<DisplayFrame>::new(1);
+        let (mut producer, _consumer) = RingBuffer::<DisplayFrame>::new(1);
 
         let make_frame = || DisplayFrame {
             surface_id: 0,
@@ -465,7 +482,7 @@ mod tests {
         assert!(producer.push(make_frame()).is_err());
     }
 
-    /// AtomicBool stop flag pattern used by DisplayThread.
+    /// `AtomicBool` stop flag pattern used by `DisplayThread`.
     #[test]
     fn stop_flag_pattern() {
         let stop_flag = Arc::new(AtomicBool::new(false));
@@ -487,7 +504,7 @@ mod tests {
     /// Multiple surfaces can have frames in the same ring.
     #[test]
     fn multiple_surfaces_in_ring() {
-        let (mut producer, mut consumer) = rtrb::RingBuffer::<DisplayFrame>::new(8);
+        let (mut producer, mut consumer) = RingBuffer::<DisplayFrame>::new(8);
 
         for sid in 0..3u16 {
             let frame = DisplayFrame {
@@ -511,7 +528,7 @@ mod tests {
         assert!(consumer.pop().is_err());
     }
 
-    /// DisplayFrame with large damage list.
+    /// `DisplayFrame` with large damage list.
     #[test]
     fn display_frame_many_damage_regions() {
         let damage: Vec<DamageRegion> = (0..100)

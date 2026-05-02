@@ -18,13 +18,159 @@ version = "0.0.1"
 edition = "2024"
 authors = ["Victor Maleca <powersemmi@gmail.com>"]
 license = "MIT"
+repository = "https://github.com/vmaleca/remoteway"
+documentation = "https://docs.rs/remoteway"
+readme = "README.md"
+keywords = ["wayland", "remote-desktop", "screencopy", "compression", "interpolation"]
+categories = ["gui", "multimedia::encoding", "network-programming"]
 
 [workspace.dependencies]
+# Core dependencies
+thiserror = "2"
+tracing = "0.1"
+zerocopy = { version = "0.8", features = ["derive"] }
+rtrb = "0.3"
+libc = "0.2"
+anyhow = "1"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+futures-util = { version = "0.3", default-features = false }
+
+# Wayland
+wayland-client = "0.31"
+wayland-server = "0.31"
+wayland-protocols = "0.32"
+wayland-protocols-wlr = "0.3"
+wayland-protocols-misc = "0.3"
+wayland-scanner = "0.31"
+wayland-backend = "0.3"
+nix = { version = "0.29", features = ["mman", "fs"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Compression
+lz4_flex = "0.11"
+zstd = "0.13"
+rayon = "1"
+wide = "0.7"
+
+# Tracing/profiling
 tracy-client = { version = "0.17", default-features = false, features = ["enable"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Alloc
+mimalloc = "0.1"
+
+# Testing / benchmarking
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1"
+
+# Serde / portal
+serde = "1"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+pipewire = "0.9"
+bitflags = "2"
+
+# Interpolation
+wgpu = "24"
+bytemuck = "1"
+ash = "0.38"
+
+# Input
+reis = "0.6"
+
+# Fuzz
+libfuzzer-sys = "0.4"
+
+# ── Workspace lint configuration ──────────────────────────────────────────
+
+[workspace.lints.rust]
+unsafe_code = "allow"
+missing_docs = "allow"
+unused_results = "warn"
+unused_qualifications = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
+
+[workspace.lints.clippy]
+# Correctness — always errors
+correctness = { level = "deny", priority = -1 }
+
+# Suspicious — always errors
+suspicious = { level = "deny", priority = -1 }
+
+# Style — warnings
+style = { level = "warn", priority = -1 }
+
+# Complexity — warnings
+complexity = { level = "warn", priority = -1 }
+
+# Perf — warnings
+perf = { level = "warn", priority = -1 }
+
+# Selective restriction lints
+unwrap_used = "allow"
+expect_used = "warn"
+dbg_macro = "warn"
+print_stdout = "warn"
+todo = "warn"
+
+# Specific pedantic lints
+doc_markdown = "warn"
+semicolon_if_nothing_returned = "warn"
+wildcard_imports = "warn"
+match_wildcard_for_single_variants = "warn"
+unused_self = "warn"
+must_use_candidate = "warn"
+return_self_not_must_use = "warn"
+
+# Disable noisy pedantic
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+too_many_lines = "allow"
+struct_excessive_bools = "allow"
+similar_names = "allow"
+
+# Unsafe docs
+undocumented_unsafe_blocks = "warn"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "warn"
+
+# ── Profile configuration ────────────────────────────────────────────────
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 panic = "abort"
+strip = true
+debug = false
+
+[profile.release-dev]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
 strip = false
+debug = true
+
+[profile.bench]
+inherits = "release"
+debug = true
+strip = false
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release.package.remoteway-proto]
+opt-level = 3
+
+[profile.release.package.remoteway-core]
+opt-level = 3

@@ -25,7 +25,9 @@ pub mod ext_foreign_toplevel_list_v1 {
             use wayland_client::protocol::__interfaces::*;
             wayland_scanner::generate_interfaces!("protocols/ext-foreign-toplevel-list-v1.xml");
         }
-        use self::__interfaces::*;
+        use self::__interfaces::{
+            EXT_FOREIGN_TOPLEVEL_HANDLE_V1_INTERFACE, EXT_FOREIGN_TOPLEVEL_LIST_V1_INTERFACE,
+        };
 
         wayland_scanner::generate_client_code!("protocols/ext-foreign-toplevel-list-v1.xml");
     }
@@ -34,16 +36,24 @@ pub mod ext_foreign_toplevel_list_v1 {
 /// ext-image-capture-source-v1.
 pub mod ext_image_capture_source_v1 {
     pub mod client {
-        use crate::protocols::ext_foreign_toplevel_list_v1::client::*;
+        use crate::protocols::ext_foreign_toplevel_list_v1::client::ext_foreign_toplevel_handle_v1;
         use wayland_client;
-        use wayland_client::protocol::*;
+        use wayland_client::protocol::wl_output;
 
         pub mod __interfaces {
-            use crate::protocols::ext_foreign_toplevel_list_v1::client::__interfaces::*;
-            use wayland_client::protocol::__interfaces::*;
+            use crate::protocols::ext_foreign_toplevel_list_v1::client::__interfaces::{
+                EXT_FOREIGN_TOPLEVEL_HANDLE_V1_INTERFACE, ext_foreign_toplevel_handle_v1_interface,
+            };
+            use wayland_client::protocol::__interfaces::{
+                WL_OUTPUT_INTERFACE, wl_output_interface,
+            };
             wayland_scanner::generate_interfaces!("protocols/ext-image-capture-source-v1.xml");
         }
-        use self::__interfaces::*;
+        use self::__interfaces::{
+            EXT_FOREIGN_TOPLEVEL_IMAGE_CAPTURE_SOURCE_MANAGER_V1_INTERFACE,
+            EXT_IMAGE_CAPTURE_SOURCE_V1_INTERFACE,
+            EXT_OUTPUT_IMAGE_CAPTURE_SOURCE_MANAGER_V1_INTERFACE,
+        };
 
         wayland_scanner::generate_client_code!("protocols/ext-image-capture-source-v1.xml");
     }
@@ -52,16 +62,25 @@ pub mod ext_image_capture_source_v1 {
 /// ext-image-copy-capture-v1.
 pub mod ext_image_copy_capture_v1 {
     pub mod client {
-        use crate::protocols::ext_image_capture_source_v1::client::*;
+        use crate::protocols::ext_image_capture_source_v1::client::ext_image_capture_source_v1;
         use wayland_client;
-        use wayland_client::protocol::*;
+        use wayland_client::protocol::{wl_buffer, wl_output, wl_pointer, wl_shm};
 
         pub mod __interfaces {
-            use crate::protocols::ext_image_capture_source_v1::client::__interfaces::*;
-            use wayland_client::protocol::__interfaces::*;
+            use crate::protocols::ext_image_capture_source_v1::client::__interfaces::{
+                EXT_IMAGE_CAPTURE_SOURCE_V1_INTERFACE, ext_image_capture_source_v1_interface,
+            };
+            use wayland_client::protocol::__interfaces::{
+                WL_BUFFER_INTERFACE, WL_POINTER_INTERFACE, wl_buffer_interface,
+                wl_pointer_interface,
+            };
             wayland_scanner::generate_interfaces!("protocols/ext-image-copy-capture-v1.xml");
         }
-        use self::__interfaces::*;
+        use self::__interfaces::{
+            EXT_IMAGE_COPY_CAPTURE_CURSOR_SESSION_V1_INTERFACE,
+            EXT_IMAGE_COPY_CAPTURE_FRAME_V1_INTERFACE, EXT_IMAGE_COPY_CAPTURE_MANAGER_V1_INTERFACE,
+            EXT_IMAGE_COPY_CAPTURE_SESSION_V1_INTERFACE,
+        };
 
         wayland_scanner::generate_client_code!("protocols/ext-image-copy-capture-v1.xml");
     }

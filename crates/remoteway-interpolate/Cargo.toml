@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "FrameInterpolator trait + FSR/RIFE/NVIDIA OF backends"
 
 [features]
@@ -15,16 +20,19 @@ fsr3 = ["fsr2"]
 rife = []
 
 [dependencies]
-thiserror = "2"
+thiserror.workspace = true
 
 # Optional GPU dependencies (feature-gated)
-wgpu = { version = "24", optional = true }
-bytemuck = { version = "1", features = ["derive"], optional = true }
-ash = { version = "0.38", optional = true }
+wgpu = { workspace = true, optional = true }
+bytemuck = { workspace = true, optional = true, features = ["derive"] }
+ash = { workspace = true, optional = true }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion.workspace = true
 
 [[bench]]
 name = "bench_interpolate"
 harness = false
+
+[lints]
+workspace = true

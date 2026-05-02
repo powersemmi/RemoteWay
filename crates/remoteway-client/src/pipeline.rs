@@ -30,7 +30,7 @@ pub fn build_handshake() -> Vec<u8> {
     wire
 }
 
-/// Build a TargetResolution message to tell the server to downscale to `width×height`.
+/// Build a `TargetResolution` message to tell the server to downscale to `width×height`.
 pub fn build_target_resolution(width: u32, height: u32) -> Vec<u8> {
     use remoteway_proto::target_resolution::TargetResolutionPayload;
 
@@ -51,7 +51,7 @@ pub fn build_target_resolution(width: u32, height: u32) -> Vec<u8> {
 
 /// Deserialize a frame payload from wire bytes using zerocopy.
 ///
-/// Returns (width, height, stride, damage_regions, CompressedFrame).
+/// Returns (width, height, stride, `damage_regions`, `CompressedFrame`).
 pub fn deserialize_frame_payload(
     payload: &[u8],
 ) -> Result<(u32, u32, u32, Vec<DamageRect>, CompressedFrame)> {
@@ -149,7 +149,7 @@ pub async fn recv_decompress_loop(
 
         match msg.header.msg_type() {
             Ok(MsgType::AnchorFrame) | Ok(MsgType::FrameUpdate) => {
-                let is_anchor = msg.header.msg_type() == Ok(MsgType::AnchorFrame);
+                let is_anchor = matches!(msg.header.msg_type(), Ok(MsgType::AnchorFrame));
                 info!(
                     "received {}: {} bytes",
                     if is_anchor {
@@ -269,7 +269,7 @@ pub async fn recv_decompress_loop(
                 debug!(?other, "ignoring message type");
             }
             Err(unknown) => {
-                warn!(msg_type = unknown, "unknown message type");
+                warn!(%unknown, "unknown message type");
             }
         }
     }
@@ -295,7 +295,7 @@ mod tests {
         height: u32,
         stride: u32,
         regions: &[DamageRect],
-        compressed: &remoteway_compress::pipeline::CompressedFrame,
+        compressed: &CompressedFrame,
     ) -> Vec<u8> {
         let meta = FrameMeta::new(width, height, stride, regions.len() as u32);
         let mut payload = Vec::new();
@@ -442,10 +442,7 @@ mod tests {
 
     #[test]
     fn input_event_wire_format() {
-        let event = remoteway_proto::input::InputEvent::key(remoteway_proto::input::KeyEvent {
-            key: 30,
-            state: 1,
-        });
+        let event = InputEvent::key(remoteway_proto::input::KeyEvent { key: 30, state: 1 });
         assert_eq!(event.as_bytes().len(), 16);
 
         // Verify that FrameHeader + InputEvent would produce correct wire size.

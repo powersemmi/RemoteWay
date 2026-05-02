@@ -10,7 +10,7 @@ pub enum BackendKind {
     WgpuOpticalFlow,
     /// AMD FSR 2.x temporal interpolation (requires `fsr2` feature + Vulkan).
     Fsr2,
-    /// NVIDIA optical flow via VK_NV_optical_flow (requires `nvidia-of` feature + Turing+ GPU).
+    /// NVIDIA optical flow via `VK_NV_optical_flow` (requires `nvidia-of` feature + Turing+ GPU).
     NvidiaOpticalFlow,
     /// AMD FSR 3 with hardware optical flow (requires `fsr3` feature + RDNA3+).
     Fsr3Hardware,
@@ -20,6 +20,7 @@ pub enum BackendKind {
 
 impl BackendKind {
     /// Human-readable name.
+    #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
             Self::LinearBlend => "linear-blend",
@@ -58,6 +59,7 @@ impl BackendDetector {
     /// Detect all available backends on this system.
     ///
     /// Returns backends sorted by quality (best first).
+    #[must_use]
     pub fn detect_available() -> Vec<BackendKind> {
         let mut backends = Vec::new();
 
@@ -85,6 +87,11 @@ impl BackendDetector {
     }
 
     /// Select the best available backend and create an interpolator.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InterpolateError::InitFailed`] if no backend can be
+    /// initialized (e.g., Vulkan unavailable, GPU not compatible).
     pub fn select_best() -> Result<Box<dyn FrameInterpolator>, InterpolateError> {
         let available = Self::detect_available();
         Self::create_backend(
@@ -96,6 +103,11 @@ impl BackendDetector {
     }
 
     /// Create an interpolator for a specific backend kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InterpolateError::InitFailed`] if the requested backend
+    /// cannot be initialized (feature not enabled, driver missing, etc.).
     pub fn create_backend(
         kind: BackendKind,
     ) -> Result<Box<dyn FrameInterpolator>, InterpolateError> {

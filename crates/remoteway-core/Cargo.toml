@@ -4,16 +4,24 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "BufferPool, SPSC abstractions, common pipeline types"
 
 [dependencies]
-rtrb = "0.3"
-thiserror = "2"
-libc = "0.2"
+rtrb.workspace = true
+thiserror.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion.workspace = true
 
 [[bench]]
 name = "bench_core"
 harness = false
+
+[lints]
+workspace = true

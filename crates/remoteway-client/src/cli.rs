@@ -17,7 +17,7 @@ pub enum CaptureBackendArg {
     WlrScreencopy,
     /// ext-image-capture-source-v1 (newer standard).
     ExtImageCapture,
-    /// xdg-desktop-portal Screencast over PipeWire.
+    /// xdg-desktop-portal Screencast over `PipeWire`.
     /// Server must be built with `--features gnome`.
     Portal,
 }
@@ -83,13 +83,13 @@ pub struct Cli {
     #[arg(long, value_parser = parse_backend_kind)]
     pub interpolation_backend: Option<BackendKind>,
 
-    /// Target resolution for server-side downscaling (WxH, e.g. 1920x1080).
+    /// Target resolution for server-side downscaling (`WxH`, e.g. 1920x1080).
     /// The server will downscale captured frames before sending.
     /// Omit to use native resolution.
     #[arg(long, value_parser = parse_resolution)]
     pub resolution: Option<Resolution>,
 
-    /// Capture a specific window by app_id on the remote side
+    /// Capture a specific window by `app_id` on the remote side
     /// (e.g. "org.mozilla.firefox"). Forwarded to remoteway-server as --app-id.
     #[arg(long)]
     pub app_id: Option<String>,
@@ -250,10 +250,7 @@ mod tests {
             "--interpolation-backend",
             "linear-blend",
         ]);
-        assert_eq!(
-            cli.interpolation_backend.unwrap(),
-            remoteway_interpolate::backend::BackendKind::LinearBlend
-        );
+        assert_eq!(cli.interpolation_backend.unwrap(), BackendKind::LinearBlend);
     }
 
     #[test]
@@ -261,7 +258,7 @@ mod tests {
         let cli = Cli::parse_from(["remoteway", "host", "--interpolation-backend", "fsr3"]);
         assert_eq!(
             cli.interpolation_backend.unwrap(),
-            remoteway_interpolate::backend::BackendKind::Fsr3Hardware
+            BackendKind::Fsr3Hardware
         );
     }
 

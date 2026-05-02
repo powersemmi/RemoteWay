@@ -21,7 +21,7 @@ fn stress_concurrent_acquire_release() {
             let barrier = Arc::clone(&barrier);
             thread::spawn(move || {
                 // All threads start at the same time.
-                barrier.wait();
+                let _ = barrier.wait();
                 for i in 0..ITERS as u64 {
                     // Spin until we get a slot — pool may be momentarily full.
                     let handle = loop {
@@ -32,6 +32,7 @@ fn stress_concurrent_acquire_release() {
                     };
                     // Write a marker into the slot to detect overlap.
                     let marker = (tid as u8).wrapping_add(1);
+                    // SAFETY: handle was just acquired and is exclusively held by this thread.
                     unsafe {
                         let ptr = pool.slot_ptr(&handle);
                         ptr.write_bytes(marker, 1);
@@ -64,6 +65,7 @@ fn write_and_read_slot_data() {
     let pool = Arc::new(BufferPool::new(4, 64));
 
     let h: FrameHandle = pool.acquire(42).unwrap();
+    // SAFETY: handle was just acquired above and is exclusively held.
     unsafe {
         let buf = pool.slot_mut(&h);
         buf[0] = 0xDE;
@@ -71,6 +73,7 @@ fn write_and_read_slot_data() {
         buf[2] = 0xBE;
         buf[3] = 0xEF;
     }
+    // SAFETY: handle is still exclusively held; reading back written data.
     unsafe {
         let buf = pool.slot(&h);
         assert_eq!(&buf[..4], &[0xDE, 0xAD, 0xBE, 0xEF]);
@@ -95,7 +98,7 @@ fn released_slot_is_reusable() {
     pool.release(h2);
 }
 
-/// FrameHandle carries the correct timestamp through acquire.
+/// `FrameHandle` carries the correct timestamp through acquire.
 #[test]
 fn frame_handle_timestamp_preserved() {
     let pool = BufferPool::new(2, 64);
@@ -105,7 +108,7 @@ fn frame_handle_timestamp_preserved() {
     pool.release(h);
 }
 
-/// pool_index is always within [0, capacity).
+/// `pool_index` is always within [0, capacity).
 #[test]
 fn pool_index_within_capacity() {
     let capacity = 16;

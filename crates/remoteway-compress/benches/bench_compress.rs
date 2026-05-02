@@ -26,7 +26,7 @@ fn damage_rects_5pct() -> Vec<DamageRect> {
         .collect()
 }
 
-/// delta_encode (SIMD) on a 4K frame with ~5% damage.
+/// `delta_encode` (SIMD) on a 4K frame with ~5% damage.
 fn bench_delta_encode_4k_5pct(c: &mut Criterion) {
     let current = make_frame_4k(7);
     let previous = make_frame_4k(3);
@@ -42,14 +42,14 @@ fn bench_delta_encode_4k_5pct(c: &mut Criterion) {
     group.bench_function("4k_5pct_simd", |b| {
         b.iter(|| {
             let mut out = Vec::new();
-            delta_encode_simd(&current, &previous, STRIDE4K, &regions, &mut out);
+            delta_encode_simd(&current, &previous, STRIDE4K, &regions, &mut out)
         });
     });
 
     group.bench_function("4k_5pct_scalar", |b| {
         b.iter(|| {
             let mut out = Vec::new();
-            delta_encode_scalar(&current, &previous, STRIDE4K, &regions, &mut out);
+            delta_encode_scalar(&current, &previous, STRIDE4K, &regions, &mut out)
         });
     });
 
@@ -70,16 +70,12 @@ fn bench_compress_4k_full(c: &mut Criterion) {
     let mut group = c.benchmark_group("lz4_compress");
     group.throughput(Throughput::Bytes(total_bytes));
 
-    group.bench_function("4k_full_frame", |b| {
-        b.iter(|| {
-            let _ = compress_region(&delta);
-        });
-    });
+    group.bench_function("4k_full_frame", |b| b.iter(|| compress_region(&delta)));
 
     group.finish();
 }
 
-/// compress_frame pipeline (delta + LZ4) for different damage levels.
+/// `compress_frame` pipeline (delta + LZ4) for different damage levels.
 fn bench_pipeline(c: &mut Criterion) {
     let current = make_frame_4k(11);
     let previous = make_frame_4k(13);
@@ -101,11 +97,7 @@ fn bench_pipeline(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("delta_lz4", label),
             &regions,
-            |b, regions| {
-                b.iter(|| {
-                    let _ = compress_frame(&current, &previous, STRIDE4K, regions);
-                });
-            },
+            |b, regions| b.iter(|| compress_frame(&current, &previous, STRIDE4K, regions)),
         );
     }
 

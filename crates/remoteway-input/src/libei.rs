@@ -29,7 +29,7 @@ impl EiInput {
     /// Connect to the EI server and perform handshake.
     ///
     /// The `socket` is typically obtained from xdg-desktop-portal's
-    /// RemoteDesktop interface via `ConnectToEIS`.
+    /// `RemoteDesktop` interface via `ConnectToEIS`.
     pub fn new(socket: UnixStream) -> Result<Self, InputError> {
         let context = ei::Context::new(socket)
             .map_err(|e| InputError::Protocol(format!("EI context creation failed: {e}")))?;
@@ -60,7 +60,9 @@ impl EiInput {
                         // Start emulating on this device.
                         let serial = self.connection.serial();
                         dev.device().start_emulating(serial, 0);
-                        self.connection.flush().ok();
+                        self.connection
+                            .flush()
+                            .map_err(|e| InputError::Protocol(format!("EI flush failed: {e}")))?;
                         self.device = Some(dev);
                     }
                 }

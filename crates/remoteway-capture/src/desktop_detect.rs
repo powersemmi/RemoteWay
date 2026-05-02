@@ -1,9 +1,9 @@
 /// Detected desktop environment type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopEnvironment {
-    /// GNOME — uses xdg-desktop-portal + PipeWire for capture, libei for input.
+    /// GNOME — uses xdg-desktop-portal + `PipeWire` for capture, libei for input.
     Gnome,
-    /// KDE Plasma — uses xdg-desktop-portal + PipeWire.
+    /// KDE Plasma — uses xdg-desktop-portal + `PipeWire`.
     Kde,
     /// wlroots-based (Sway, Hyprland, etc.) — uses wlr-screencopy / ext-image-capture.
     Wlroots,
@@ -13,11 +13,13 @@ pub enum DesktopEnvironment {
 
 impl DesktopEnvironment {
     /// Returns `true` if this DE requires the portal/PipeWire capture path.
+    #[must_use]
     pub fn needs_portal(&self) -> bool {
         matches!(self, Self::Gnome | Self::Kde)
     }
 
     /// Returns `true` if this DE supports wlr-screencopy / ext-image-capture.
+    #[must_use]
     pub fn has_wlr_protocols(&self) -> bool {
         matches!(self, Self::Wlroots)
     }
@@ -444,19 +446,19 @@ mod tests {
     fn process_scan_returns_some_on_linux() {
         // On a running Linux desktop, at least one compositor should be detected.
         // In CI without a compositor, this returns None — that's fine.
-        let _result = detect_from_processes();
+        detect_from_processes();
     }
 
     #[test]
     fn loginctl_fallback_does_not_panic() {
         // Should not panic even if loginctl is not installed.
-        let _result = detect_from_loginctl();
+        detect_from_loginctl();
     }
 
     #[test]
     fn ensure_wayland_env_does_not_panic() {
         // Should not panic regardless of environment.
-        let _result = ensure_wayland_env();
+        ensure_wayland_env();
     }
 
     #[test]
@@ -467,14 +469,14 @@ mod tests {
     #[test]
     fn find_wayland_socket_empty_dir() {
         let dir = std::env::temp_dir().join("remoteway_test_empty");
-        let _ = std::fs::create_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok();
         assert!(find_wayland_socket(dir.to_str().unwrap()).is_none());
-        let _ = std::fs::remove_dir(&dir);
+        std::fs::remove_dir(&dir).ok();
     }
 
     #[test]
     fn inherit_compositor_env_does_not_panic() {
-        let _result = inherit_compositor_env();
+        inherit_compositor_env();
     }
 
     // --- Additional coverage for detect_from_env branches ---
@@ -597,25 +599,25 @@ mod tests {
     #[test]
     fn find_wayland_socket_dir_with_regular_files_only() {
         let dir = std::env::temp_dir().join("remoteway_test_no_sockets");
-        let _ = std::fs::create_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok();
         // Create regular files that look like wayland sockets but are not
-        let _ = std::fs::write(dir.join("wayland-0"), b"not a socket");
-        let _ = std::fs::write(dir.join("wayland-1"), b"also not a socket");
+        std::fs::write(dir.join("wayland-0"), b"not a socket").ok();
+        std::fs::write(dir.join("wayland-1"), b"also not a socket").ok();
         // .lock files should also be ignored
-        let _ = std::fs::write(dir.join("wayland-0.lock"), b"lock");
+        std::fs::write(dir.join("wayland-0.lock"), b"lock").ok();
         assert!(find_wayland_socket(dir.to_str().unwrap()).is_none());
         // Cleanup
-        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn find_wayland_socket_dir_with_non_wayland_files() {
         let dir = std::env::temp_dir().join("remoteway_test_misc_files");
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(dir.join("not-wayland"), b"");
-        let _ = std::fs::write(dir.join("bus"), b"");
+        std::fs::create_dir_all(&dir).ok();
+        std::fs::write(dir.join("not-wayland"), b"").ok();
+        std::fs::write(dir.join("bus"), b"").ok();
         assert!(find_wayland_socket(dir.to_str().unwrap()).is_none());
-        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

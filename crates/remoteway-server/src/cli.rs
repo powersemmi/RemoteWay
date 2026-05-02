@@ -8,7 +8,7 @@ pub enum CaptureBackendArg {
     WlrScreencopy,
     /// ext-image-capture-source-v1 (newer standard)
     ExtImageCapture,
-    /// xdg-desktop-portal Screencast over PipeWire (GNOME, KDE; debug path on wlroots).
+    /// xdg-desktop-portal Screencast over `PipeWire` (GNOME, KDE; debug path on wlroots).
     /// Requires the server to be built with `--features gnome`.
     Portal,
 }
@@ -37,12 +37,12 @@ pub struct Cli {
     #[arg(long)]
     pub output: Option<String>,
 
-    /// Capture a specific window by app_id (e.g. "org.mozilla.firefox").
+    /// Capture a specific window by `app_id` (e.g. "org.mozilla.firefox").
     /// Requires ext-image-capture protocol support. Mutually exclusive with --output.
     #[arg(long, conflicts_with = "output")]
     pub app_id: Option<String>,
 
-    /// Command to launch (with WAYLAND_DISPLAY pointing to captured compositor)
+    /// Command to launch (with `WAYLAND_DISPLAY` pointing to captured compositor)
     #[arg(last = true)]
     pub command: Vec<String>,
 }

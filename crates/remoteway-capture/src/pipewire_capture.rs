@@ -1,4 +1,4 @@
-//! PipeWire screen capture backend for portal screencast.
+//! `PipeWire` screen capture backend for portal screencast.
 //!
 //! Uses `ThreadLoopRc` (`pw_thread_loop`) like OBS — `set_active`
 //! must be called with `pw_thread_loop_lock` held. Frames passed
@@ -70,10 +70,14 @@ impl CaptureBackend for PipeWireCaptureBackend {
             } else {
                 return Err(CaptureError::SessionEnded);
             }
-            let guard = lock.lock().unwrap();
+            let guard = lock.lock().map_err(|e| {
+                CaptureError::Protocol(format!("mutex poisoned in next_frame: {e}"))
+            })?;
             let result = cvar
                 .wait_timeout(guard, Duration::from_millis(100))
-                .unwrap();
+                .map_err(|e| {
+                    CaptureError::Protocol(format!("condvar wait failed in next_frame: {e}"))
+                })?;
             let mut guard = result.0;
             if let Some(frame) = guard.take() {
                 return Ok(frame);
@@ -84,14 +88,19 @@ impl CaptureBackend for PipeWireCaptureBackend {
         "pipewire-portal"
     }
     fn stop(&mut self) {
-        let _ = self.stop_tx.send(());
-        if let Some(handle) = self.thread.take() {
-            let _ = handle.join();
+        if self.stop_tx.send(()).is_err() {
+            tracing::debug!("pipewire stop signal: channel already closed");
+        }
+        if let Some(handle) = self.thread.take()
+            && let Err(e) = handle.join()
+        {
+            tracing::warn!("pipewire capture thread panicked: {e:?}");
         }
     }
 }
 impl Drop for PipeWireCaptureBackend {
     fn drop(&mut self) {
+        // INTENTIONAL: best-effort signal in Drop, cannot panic or propagate error
         let _ = self.stop_tx.send(());
     }
 }
@@ -181,8 +190,13 @@ fn pipewire_thread(
                 return;
             }
             let Some(pod) = pod else { return };
-            let Some(fmt) = parse_video_format(pod) else {
-                return;
+            let fmt = match parse_video_format(pod) {
+                Ok(Some(f)) => f,
+                Ok(None) => return,
+                Err(e) => {
+                    tracing::error!(?e, "parse_video_format failed");
+                    return;
+                }
             };
             tracing::info!(
                 width = fmt.width,
@@ -197,7 +211,13 @@ fn pipewire_thread(
             }
             // Critical: complete negotiation by pushing SPA_PARAM_Buffers + SPA_PARAM_Meta.
             // Without this KWin/portal producer stops after 1 frame (buffer pool never finalized).
-            let response = build_param_response_pods(stride, height);
+            let response = match build_param_response_pods(stride, height) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!(?e, "build_param_response_pods failed");
+                    return;
+                }
+            };
             let mut refs: Vec<&pw::spa::pod::Pod> = response
                 .iter()
                 .filter_map(|b| pw::spa::pod::Pod::from_bytes(b))
@@ -275,7 +295,7 @@ fn pipewire_thread(
         .map_err(|_| CaptureError::Protocol("listener registration failed".into()))?;
 
     // Format pods
-    let fpods = build_format_params(portal_width, portal_height);
+    let fpods = build_format_params(portal_width, portal_height)?;
     let mut refs: Vec<&pw::spa::pod::Pod> = fpods
         .iter()
         .filter_map(|b| pw::spa::pod::Pod::from_bytes(b))
@@ -302,17 +322,25 @@ fn pipewire_thread(
 
     // Main loop: check needs_reconnect every 100ms, exit on stop
     let (lk, cv) = &*frame_tx;
-    let mut guard = lk.lock().unwrap();
+    let mut guard = lk
+        .lock()
+        .map_err(|e| CaptureError::Protocol(format!("mutex poisoned in pipewire_thread: {e}")))?;
     while !stopped.load(Ordering::Acquire) {
         if needs_reconnect.swap(false, Ordering::AcqRel) {
             tracing::info!("set_active(false/true) with lock");
             let _g = thread_loop.lock();
-            let _ = stream.set_active(false);
-            let _ = stream.set_active(true);
+            if let Err(e) = stream.set_active(false) {
+                tracing::warn!("pipewire set_active(false) failed: {e:?}");
+            }
+            if let Err(e) = stream.set_active(true) {
+                tracing::warn!("pipewire set_active(true) failed: {e:?}");
+            }
         }
         guard = cv
             .wait_timeout(guard, Duration::from_millis(100))
-            .unwrap()
+            .map_err(|e| {
+                CaptureError::Protocol(format!("condvar wait failed in pipewire_thread: {e}"))
+            })?
             .0;
     }
     drop(guard);
@@ -324,7 +352,7 @@ fn pipewire_thread(
 
 // Helper functions
 
-fn build_format_params(width: u32, height: u32) -> Vec<Vec<u8>> {
+fn build_format_params(width: u32, height: u32) -> Result<Vec<Vec<u8>>, CaptureError> {
     use pipewire::spa::sys;
     let formats = [
         sys::SPA_VIDEO_FORMAT_BGRA,
@@ -332,12 +360,11 @@ fn build_format_params(width: u32, height: u32) -> Vec<Vec<u8>> {
         sys::SPA_VIDEO_FORMAT_RGBA,
         sys::SPA_VIDEO_FORMAT_RGBx,
     ];
-    format_enum_pod(width, height, &formats)
-        .map(|b| vec![b])
-        .unwrap_or_default()
+    let pod = format_enum_pod(width, height, &formats)?;
+    Ok(vec![pod])
 }
 
-fn format_enum_pod(width: u32, height: u32, formats: &[u32]) -> Option<Vec<u8>> {
+fn format_enum_pod(width: u32, height: u32, formats: &[u32]) -> Result<Vec<u8>, CaptureError> {
     use pipewire::spa::{param, pod, utils};
     let mut properties = vec![
         pod::Property {
@@ -402,38 +429,30 @@ fn format_enum_pod(width: u32, height: u32, formats: &[u32]) -> Option<Vec<u8>> 
         properties,
     };
     let mut cursor = std::io::Cursor::new(Vec::new());
-    pod::serialize::PodSerializer::serialize(&mut cursor, &pod::Value::Object(obj)).ok()?;
-    Some(cursor.into_inner())
+    // INTENTIONAL: serialize writes into cursor; result tuple not needed
+    let _ = pod::serialize::PodSerializer::serialize(&mut cursor, &pod::Value::Object(obj))
+        .map_err(|_| CaptureError::Protocol("pod serialization failed".into()))?;
+    Ok(cursor.into_inner())
 }
 
 /// Build the parameters the consumer must push back via `pw_stream_update_params`
 /// after format negotiation. Without `SPA_PARAM_Buffers` and `SPA_PARAM_Meta(Header)`
-/// KWin's screencast producer stops after the first buffer (pool never finalized).
+/// `KWin`'s screencast producer stops after the first buffer (pool never finalized).
 ///
 /// Mirrors what kpipewire / OBS / lamco-pipewire do.
-fn build_param_response_pods(stride: u32, height: u32) -> Vec<Vec<u8>> {
-    let mut out = Vec::with_capacity(5);
-    if let Some(p) = build_buffers_pod(stride, height) {
-        out.push(p);
-    }
-    // SPA_META_Header — required by KWin (it stamps pts/seq into the header).
-    if let Some(p) = build_meta_pod(pipewire::spa::sys::SPA_META_Header, 32) {
-        out.push(p);
-    }
-    // Optional but commonly requested:
-    if let Some(p) = build_meta_pod(pipewire::spa::sys::SPA_META_VideoCrop, 16) {
-        out.push(p);
-    }
-    if let Some(p) = build_meta_pod(pipewire::spa::sys::SPA_META_VideoTransform, 4) {
-        out.push(p);
-    }
-    if let Some(p) = build_meta_pod(pipewire::spa::sys::SPA_META_VideoDamage, 16 * 16) {
-        out.push(p);
-    }
-    out
+fn build_param_response_pods(stride: u32, height: u32) -> Result<Vec<Vec<u8>>, CaptureError> {
+    let out = vec![
+        build_buffers_pod(stride, height)?,
+        build_meta_pod(pipewire::spa::sys::SPA_META_Header, 32)?,
+        // Optional but commonly requested:
+        build_meta_pod(pipewire::spa::sys::SPA_META_VideoCrop, 16)?,
+        build_meta_pod(pipewire::spa::sys::SPA_META_VideoTransform, 4)?,
+        build_meta_pod(pipewire::spa::sys::SPA_META_VideoDamage, 16 * 16)?,
+    ];
+    Ok(out)
 }
 
-fn build_buffers_pod(stride: u32, height: u32) -> Option<Vec<u8>> {
+fn build_buffers_pod(stride: u32, height: u32) -> Result<Vec<u8>, CaptureError> {
     use pipewire::spa::{param, pod, sys, utils};
     let size = (stride.saturating_mul(height)) as i32;
     let mem_mask = ((1u32 << sys::SPA_DATA_MemPtr) | (1u32 << sys::SPA_DATA_MemFd)) as i32;
@@ -495,11 +514,13 @@ fn build_buffers_pod(stride: u32, height: u32) -> Option<Vec<u8>> {
         properties,
     };
     let mut cursor = std::io::Cursor::new(Vec::new());
-    pod::serialize::PodSerializer::serialize(&mut cursor, &pod::Value::Object(obj)).ok()?;
-    Some(cursor.into_inner())
+    // INTENTIONAL: serialize writes into cursor; result tuple not needed
+    let _ = pod::serialize::PodSerializer::serialize(&mut cursor, &pod::Value::Object(obj))
+        .map_err(|_| CaptureError::Protocol("pod serialization failed".into()))?;
+    Ok(cursor.into_inner())
 }
 
-fn build_meta_pod(meta_type: u32, size: u32) -> Option<Vec<u8>> {
+fn build_meta_pod(meta_type: u32, size: u32) -> Result<Vec<u8>, CaptureError> {
     use pipewire::spa::{param, pod, sys, utils};
     let properties = vec![
         pod::Property {
@@ -519,17 +540,22 @@ fn build_meta_pod(meta_type: u32, size: u32) -> Option<Vec<u8>> {
         properties,
     };
     let mut cursor = std::io::Cursor::new(Vec::new());
-    pod::serialize::PodSerializer::serialize(&mut cursor, &pod::Value::Object(obj)).ok()?;
-    Some(cursor.into_inner())
+    // INTENTIONAL: serialize writes into cursor; result tuple not needed
+    let _ = pod::serialize::PodSerializer::serialize(&mut cursor, &pod::Value::Object(obj))
+        .map_err(|_| CaptureError::Protocol("pod serialization failed".into()))?;
+    Ok(cursor.into_inner())
 }
 
-fn parse_video_format(pod: &pipewire::spa::pod::Pod) -> Option<VideoFormat> {
+fn parse_video_format(pod: &pipewire::spa::pod::Pod) -> Result<Option<VideoFormat>, CaptureError> {
     use pipewire::spa::param::video::{VideoFormat as PwVideoFormat, VideoInfoRaw};
     let mut info = VideoInfoRaw::default();
-    info.parse(pod).ok()?;
+    // INTENTIONAL: parse populates `info` in-place; SpaSuccess value not needed
+    let _ = info
+        .parse(pod)
+        .map_err(|_| CaptureError::Protocol("pod parse failed".into()))?;
     let pw_fmt = info.format();
     if pw_fmt == PwVideoFormat::Unknown {
-        return None;
+        return Ok(None);
     }
     let (format, bpp) = match pw_fmt {
         PwVideoFormat::BGRA => (PixelFormat::Argb8888, 4),
@@ -543,17 +569,17 @@ fn parse_video_format(pod: &pipewire::spa::pod::Pod) -> Option<VideoFormat> {
         PwVideoFormat::YUY2 => (PixelFormat::Argb8888, 2),
         _ => {
             tracing::warn!(?pw_fmt, "unsupported format");
-            return None;
+            return Ok(None);
         }
     };
     let size = info.size();
-    Some(VideoFormat {
+    Ok(Some(VideoFormat {
         width: size.width,
         height: size.height,
         stride: size.width * bpp,
         format,
         raw_format: pw_fmt.as_raw(),
-    })
+    }))
 }
 
 fn yuy2_to_bgra(src: &[u8], width: u32, height: u32) -> Vec<u8> {

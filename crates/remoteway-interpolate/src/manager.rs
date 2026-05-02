@@ -22,6 +22,7 @@ pub struct InterpolationManager {
 
 impl InterpolationManager {
     /// Create a new manager with the given interpolation backend.
+    #[must_use]
     pub fn new(backend: Box<dyn FrameInterpolator>) -> Self {
         Self {
             backend,
@@ -54,10 +55,14 @@ impl InterpolationManager {
     ///
     /// Returns `None` if fewer than 2 frames have been pushed (no pair to
     /// interpolate between).
+    ///
+    /// # Errors
+    ///
+    /// Propagates errors from the underlying [`FrameInterpolator::interpolate`]
+    /// call (invalid factor, dimension mismatch, GPU/compute errors).
     pub fn interpolate(&mut self, t: f32) -> Result<Option<GpuFrame>, InterpolateError> {
-        let (anchor, target) = match (&self.anchor, &self.target) {
-            (Some(a), Some(b)) => (a, b),
-            _ => return Ok(None),
+        let (Some(anchor), Some(target)) = (&self.anchor, &self.target) else {
+            return Ok(None);
         };
 
         let result = self.backend.interpolate(anchor, target, t)?;
@@ -66,6 +71,7 @@ impl InterpolationManager {
     }
 
     /// Check if the manager has a valid frame pair for interpolation.
+    #[must_use]
     pub fn can_interpolate(&self) -> bool {
         self.anchor.is_some() && self.target.is_some()
     }
@@ -88,31 +94,37 @@ impl InterpolationManager {
     }
 
     /// Number of real frames received.
+    #[must_use]
     pub fn frame_count(&self) -> u64 {
         self.frame_count
     }
 
     /// Number of interpolated frames generated.
+    #[must_use]
     pub fn interpolated_count(&self) -> u64 {
         self.interpolated_count
     }
 
     /// Name of the active interpolation backend.
+    #[must_use]
     pub fn backend_name(&self) -> &str {
         self.backend.name()
     }
 
     /// Estimated latency of the active backend in milliseconds.
+    #[must_use]
     pub fn backend_latency_ms(&self) -> f32 {
         self.backend.latency_ms()
     }
 
     /// Timestamp of the anchor frame, if available.
+    #[must_use]
     pub fn anchor_timestamp_ns(&self) -> Option<u64> {
         self.anchor.as_ref().map(|f| f.timestamp_ns)
     }
 
     /// Timestamp of the target frame, if available.
+    #[must_use]
     pub fn target_timestamp_ns(&self) -> Option<u64> {
         self.target.as_ref().map(|f| f.timestamp_ns)
     }
@@ -210,7 +222,7 @@ mod tests {
         let mut mgr = make_manager();
         mgr.push_frame(make_frame(0, 0));
         mgr.push_frame(make_frame(100, 1000));
-        mgr.interpolate(0.5).unwrap();
+        let _ = mgr.interpolate(0.5).unwrap();
 
         mgr.clear();
         assert!(!mgr.can_interpolate());

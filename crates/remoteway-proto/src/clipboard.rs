@@ -11,6 +11,7 @@ pub struct ClipboardHeader {
     pub mime_type: u8,
     /// Direction: 0 = server→client, 1 = client→server.
     pub direction: u8,
+    /// Alignment padding; always zero.
     pub _pad: u16,
     /// Length of clipboard data following this header.
     pub data_len: u32,
@@ -41,8 +42,11 @@ impl TryFrom<u8> for ClipboardMime {
 }
 
 impl ClipboardHeader {
+    /// Size of `ClipboardHeader` in bytes (always 8).
     pub const SIZE: usize = size_of::<Self>();
 
+    /// Create a new clipboard header.
+    #[must_use]
     pub fn new(mime: ClipboardMime, direction: u8, data_len: u32) -> Self {
         Self {
             mime_type: mime as u8,
@@ -52,6 +56,7 @@ impl ClipboardHeader {
         }
     }
 
+    /// Decode the `mime_type` byte into a [`ClipboardMime`] discriminant.
     pub fn mime(&self) -> Result<ClipboardMime, u8> {
         ClipboardMime::try_from(self.mime_type)
     }

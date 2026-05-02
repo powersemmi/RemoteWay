@@ -1,5 +1,5 @@
 //! Integration test using an in-process wayland-server mock that implements
-//! wl_compositor, wl_shm, and xdg_wm_base for full display protocol round-trip.
+//! `wl_compositor`, `wl_shm`, and `xdg_wm_base` for full display protocol round-trip.
 
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
@@ -892,6 +892,7 @@ fn mock_compositor_shm_double_buffer() {
     nix::unistd::ftruncate(&fd, total_size as i64).unwrap();
 
     // mmap and write pattern data.
+    // SAFETY: test mock helper.
     let map = unsafe {
         nix::sys::mman::mmap(
             None,
@@ -905,6 +906,7 @@ fn mock_compositor_shm_double_buffer() {
     };
 
     // Write different patterns to each buffer.
+    // SAFETY: test mock helper.
     unsafe {
         let slice = std::slice::from_raw_parts_mut(map.as_ptr() as *mut u8, total_size as usize);
         // Buffer 0: all 0xAA.
@@ -961,8 +963,9 @@ fn mock_compositor_shm_double_buffer() {
     buf0.destroy();
     buf1.destroy();
     pool.destroy();
+    // SAFETY: test mock helper.
     unsafe {
-        let _ = nix::sys::mman::munmap(map, total_size as usize);
+        nix::sys::mman::munmap(map, total_size as usize).ok();
     }
     toplevel.destroy();
     xdg_surface.destroy();
@@ -1216,7 +1219,7 @@ fn mock_compositor_damage_regions() {
 
 use std::sync::Mutex;
 
-/// Mutex to serialize tests that modify the WAYLAND_DISPLAY env var.
+/// Mutex to serialize tests that modify the `WAYLAND_DISPLAY` env var.
 static WAYLAND_DISPLAY_LOCK: Mutex<()> = Mutex::new(());
 
 struct ListeningDisplayMock {
@@ -1250,6 +1253,7 @@ impl ListeningDisplayMock {
         let listener = ListeningSocket::bind(&socket_name).unwrap();
 
         let old_display = std::env::var("WAYLAND_DISPLAY").ok();
+        // SAFETY: test mock helper.
         unsafe { std::env::set_var("WAYLAND_DISPLAY", &socket_name) };
 
         let stop = Arc::new(AtomicBool::new(false));
@@ -1261,10 +1265,10 @@ impl ListeningDisplayMock {
             let mut dh = display.handle();
             while !stop_server.load(Ordering::Relaxed) {
                 if let Ok(Some(stream)) = listener.accept() {
-                    let _ = dh.insert_client(stream, Arc::new(()));
+                    dh.insert_client(stream, Arc::new(()));
                 }
-                let _ = display.dispatch_clients(&mut compositor);
-                let _ = display.flush_clients();
+                display.dispatch_clients(&mut compositor);
+                display.flush_clients();
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         });
@@ -1284,10 +1288,12 @@ impl Drop for ListeningDisplayMock {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(h) = self.server_thread.take() {
-            let _ = h.join();
+            h.join().ok();
         }
         match self.old_display.take() {
+            // SAFETY: test mock helper.
             Some(val) => unsafe { std::env::set_var("WAYLAND_DISPLAY", val) },
+            // SAFETY: test mock helper.
             None => unsafe { std::env::remove_var("WAYLAND_DISPLAY") },
         }
     }

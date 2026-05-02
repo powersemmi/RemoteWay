@@ -10,18 +10,23 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 pub struct TargetResolutionPayload {
+    /// Requested frame width in pixels (0 = native).
     pub width: u32,
+    /// Requested frame height in pixels (0 = native).
     pub height: u32,
 }
 
 const _: () = assert!(
-    std::mem::size_of::<TargetResolutionPayload>() == 8,
+    size_of::<TargetResolutionPayload>() == 8,
     "TargetResolutionPayload must be exactly 8 bytes"
 );
 
 impl TargetResolutionPayload {
+    /// Size of `TargetResolutionPayload` in bytes (always 8).
     pub const SIZE: usize = 8;
 
+    /// Create a new target resolution request.
+    #[must_use]
     pub fn new(width: u32, height: u32) -> Self {
         Self { width, height }
     }
@@ -35,7 +40,7 @@ mod tests {
 
     #[test]
     fn size_is_8() {
-        assert_eq!(std::mem::size_of::<TargetResolutionPayload>(), 8);
+        assert_eq!(size_of::<TargetResolutionPayload>(), 8);
         assert_eq!(TargetResolutionPayload::SIZE, 8);
     }
 

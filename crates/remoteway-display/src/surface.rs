@@ -8,29 +8,42 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 use crate::error::DisplayError;
 use crate::shm::{DamageRegion, ShmFrameUploader};
 
-/// A managed xdg_toplevel surface with its own SHM uploader.
+/// A managed `xdg_toplevel` surface with its own SHM uploader.
 pub struct ManagedSurface {
+    /// Surface identifier (corresponds to remote window ID).
     pub surface_id: u16,
+    /// The `wl_surface` backing this window.
     wl_surface: wl_surface::WlSurface,
+    /// The `xdg_surface` role object.
     xdg_surface: xdg_surface::XdgSurface,
+    /// The `xdg_toplevel` for window management.
     xdg_toplevel: xdg_toplevel::XdgToplevel,
     /// `wp_viewport` for compositor-side scaling. When the compositor window
     /// is a different size than the SHM buffer, the viewport maps the full
     /// buffer to the destination rectangle — zero CPU overhead.
     viewport: Option<wp_viewport::WpViewport>,
+    /// SHM frame uploader for pixel data.
     uploader: Option<ShmFrameUploader>,
+    /// Frame width in pixels.
     pub width: u32,
+    /// Frame height in pixels.
     pub height: u32,
+    /// Bytes per row (may be > width * 4 due to padding).
     pub stride: u32,
+    /// Window title.
     title: String,
+    /// Application identifier.
     app_id: String,
+    /// Whether the surface has received its first `configure` event.
     configured: bool,
+    /// Whether a `wl_surface.frame` callback is pending.
     frame_callback_pending: bool,
     /// Monotonic instant of the last `wl_surface.frame` callback request.
     /// Used to drop the pending flag if the compositor never delivers `done`
     /// (e.g. when the surface is hidden or the buffer mismatches the
     /// configured window size).
     frame_callback_requested_at: Option<std::time::Instant>,
+    /// Serial from the last `xdg_surface.configure` event.
     pending_configure_serial: Option<u32>,
 }
 
@@ -110,7 +123,9 @@ impl ManagedSurface {
 
         // Request frame callback BEFORE commit so the compositor associates
         // the callback with THIS commit, not the next one.
-        self.wl_surface.frame(qh, self.surface_id);
+        // The WlCallback is managed internally by the Wayland event queue;
+        // we receive the 'done' event via the Dispatch impl.
+        let _ = self.wl_surface.frame(qh, self.surface_id);
         self.wl_surface.commit();
         uploader.swap();
         self.frame_callback_pending = true;
@@ -119,14 +134,20 @@ impl ManagedSurface {
         true
     }
 
+    /// Whether the surface has been configured by the compositor.
+    #[must_use]
     pub fn is_configured(&self) -> bool {
         self.configured
     }
 
+    /// Get the window title.
+    #[must_use]
     pub fn title(&self) -> &str {
         &self.title
     }
 
+    /// Get the application identifier.
+    #[must_use]
     pub fn app_id(&self) -> &str {
         &self.app_id
     }
@@ -134,12 +155,19 @@ impl ManagedSurface {
 
 /// Internal Wayland dispatch state.
 pub struct DisplayState {
+    /// The `wl_compositor` global.
     pub compositor: Option<wl_compositor::WlCompositor>,
+    /// The `wl_shm` global for shared memory buffers.
     pub shm: Option<wl_shm::WlShm>,
+    /// The `xdg_wm_base` global for xdg-shell.
     pub xdg_wm_base: Option<xdg_wm_base::XdgWmBase>,
+    /// The `wl_seat` global.
     pub seat: Option<wl_seat::WlSeat>,
+    /// The `wp_viewporter` global for compositor-side scaling.
     pub viewporter: Option<wp_viewporter::WpViewporter>,
+    /// All managed surfaces.
     pub surfaces: Vec<ManagedSurface>,
+    /// Toggled when a `wl_callback.done` event arrives.
     pub frame_done: bool,
 }
 
@@ -148,8 +176,11 @@ pub struct DisplayState {
 /// Creates and manages `xdg_toplevel` windows for displaying remote frames.
 /// Each surface corresponds to a remote window identified by `surface_id`.
 pub struct WaylandDisplay {
+    /// The Wayland connection.
     conn: Connection,
+    /// Dispatch state holding globals and surfaces.
     pub state: DisplayState,
+    /// Event queue for Wayland protocol dispatch.
     pub event_queue: wayland_client::EventQueue<DisplayState>,
 }
 
@@ -171,10 +202,12 @@ impl WaylandDisplay {
             frame_done: false,
         };
 
-        display.get_registry(&qh, ());
+        // The WlRegistry is managed internally by the Wayland event queue;
+        // globals are discovered via the Dispatch impl on DisplayState.
+        let _ = display.get_registry(&qh, ());
 
-        // First roundtrip: discover globals.
-        event_queue.roundtrip(&mut state)?;
+        // First roundtrip: discover globals. Dispatch count is irrelevant here.
+        let _ = event_queue.roundtrip(&mut state)?;
 
         if state.compositor.is_none() {
             return Err(DisplayError::NoCompositor);
@@ -193,7 +226,7 @@ impl WaylandDisplay {
         })
     }
 
-    /// Create a new xdg_toplevel surface for a remote window.
+    /// Create a new `xdg_toplevel` surface for a remote window.
     pub fn create_surface(
         &mut self,
         surface_id: u16,
@@ -252,8 +285,8 @@ impl WaylandDisplay {
             pending_configure_serial: None,
         });
 
-        // Roundtrip to receive configure event.
-        self.event_queue.roundtrip(&mut self.state)?;
+        // Roundtrip to receive configure event. Dispatch count is irrelevant.
+        let _ = self.event_queue.roundtrip(&mut self.state)?;
 
         // Create SHM uploader now that we have the configure.
         self.init_surface_uploader(surface_id)?;
@@ -291,7 +324,7 @@ impl WaylandDisplay {
         Ok(())
     }
 
-    /// Update title and app_id for a surface.
+    /// Update title and `app_id` for a surface.
     pub fn update_surface_metadata(
         &mut self,
         surface_id: u16,
@@ -366,12 +399,14 @@ impl WaylandDisplay {
             }
         }
 
-        self.event_queue.dispatch_pending(&mut self.state)?;
+        // Dispatch count is irrelevant; we just need events processed.
+        let _ = self.event_queue.dispatch_pending(&mut self.state)?;
 
         if let Some(guard) = self.event_queue.prepare_read() {
             match guard.read() {
                 Ok(_) => {
-                    self.event_queue.dispatch_pending(&mut self.state)?;
+                    // Dispatch count is irrelevant; we just need events processed.
+                    let _ = self.event_queue.dispatch_pending(&mut self.state)?;
                 }
                 Err(wayland_client::backend::WaylandError::Io(ref e))
                     if e.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -388,11 +423,13 @@ impl WaylandDisplay {
 
     /// Blocking dispatch — waits for at least one event.
     pub fn dispatch_blocking(&mut self) -> Result<(), DisplayError> {
-        self.event_queue.blocking_dispatch(&mut self.state)?;
+        // Dispatch count is irrelevant; we just need events processed.
+        let _ = self.event_queue.blocking_dispatch(&mut self.state)?;
         Ok(())
     }
 
     /// Get immutable access to a surface by ID.
+    #[must_use]
     pub fn get_surface(&self, surface_id: u16) -> Option<&ManagedSurface> {
         self.state
             .surfaces
@@ -765,6 +802,7 @@ mod tests {
     #[test]
     fn wayland_display_fails_without_compositor() {
         // Unset WAYLAND_DISPLAY to ensure no connection.
+        // SAFETY: removing env var in an isolated test is safe.
         unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
         let result = WaylandDisplay::new();
         assert!(result.is_err());
@@ -772,13 +810,13 @@ mod tests {
 
     #[test]
     fn wayland_display_error_is_connect_error() {
+        // SAFETY: removing env var in an isolated test is safe.
         unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
         let result = WaylandDisplay::new();
         match result {
             Err(DisplayError::WaylandConnect(_)) => {} // expected
             Err(other) => {
                 // Some environments might return a different error.
-                let _ = other;
             }
             Ok(_) => panic!("expected error without WAYLAND_DISPLAY"),
         }

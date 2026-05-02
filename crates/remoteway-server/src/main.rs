@@ -39,8 +39,11 @@ fn main() -> Result<()> {
 
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("remoteway=info".parse().unwrap()),
+            tracing_subscriber::EnvFilter::from_default_env().add_directive(
+                "remoteway=info"
+                    .parse()
+                    .context("BUG: hardcoded directive must parse")?,
+            ),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -56,20 +59,26 @@ fn main() -> Result<()> {
     rt.block_on(run(cli))
 }
 
-/// Launch the child process with WAYLAND_DISPLAY propagation.
+/// Launch the child process with `WAYLAND_DISPLAY` propagation.
 ///
 /// stdin/stdout are redirected to null so the child does not inherit the
 /// SSH transport pipes (prevents protocol corruption and ensures SSH
 /// closes promptly when the server exits).
 fn launch_child(command: &[String]) -> Result<tokio::process::Child> {
     let mut cmd = tokio::process::Command::new(&command[0]);
-    cmd.args(&command[1..]);
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::null());
-    cmd.stderr(Stdio::inherit());
-    if let Ok(wl_display) = std::env::var("WAYLAND_DISPLAY") {
-        cmd.env("WAYLAND_DISPLAY", &wl_display);
-        info!(wayland_display = %wl_display, "propagating WAYLAND_DISPLAY to child");
+    let _ = cmd.args(&command[1..]);
+    let _ = cmd.stdin(Stdio::null());
+    let _ = cmd.stdout(Stdio::null());
+    let _ = cmd.stderr(Stdio::inherit());
+    match std::env::var("WAYLAND_DISPLAY") {
+        Ok(wl_display) => {
+            let _ = cmd.env("WAYLAND_DISPLAY", &wl_display);
+            info!(wayland_display = %wl_display, "propagating WAYLAND_DISPLAY to child");
+        }
+        Err(_) => {
+            // WAYLAND_DISPLAY not set; child will inherit whatever the
+            // compositor provides or fall back to its own discovery.
+        }
     }
     let child = cmd
         .spawn()
@@ -100,9 +109,10 @@ fn retry_capture_backend_with_params(
             Ok(backend) => return Ok(backend),
             Err(e) => {
                 // Permanent failures (missing protocol) — bail immediately.
-                if let Some(ce) = e.root_cause().downcast_ref::<CaptureError>()
-                    && !ce.is_retriable()
-                {
+                if matches!(
+                    e.root_cause().downcast_ref::<CaptureError>(),
+                    Some(ce) if !ce.is_retriable()
+                ) {
                     return Err(e);
                 }
                 if attempt == max_retries {
@@ -122,7 +132,7 @@ fn retry_capture_backend_with_params(
 ///
 /// Returns `(auto_detect_child, explicit_app_id_launch)`:
 /// - `auto_detect_child`: command present, no `--app-id` -> auto-detect child window via toplevel diff.
-/// - `explicit_app_id_launch`: command present + `--app-id` -> launch child, find by app_id.
+/// - `explicit_app_id_launch`: command present + `--app-id` -> launch child, find by `app_id`.
 /// - Both `false`: no command -> capture by `--app-id`, `--output`, or default output.
 fn determine_capture_mode(app_id: Option<&str>, command: &[String]) -> (bool, bool) {
     let auto_detect_child = app_id.is_none() && !command.is_empty();
@@ -141,12 +151,16 @@ async fn run(cli: cli::Cli) -> Result<()> {
 
     // Send server handshake.
     let handshake_data = pipeline::build_handshake(&cli.capture, &cli.compress);
-    sender.send_anchor(handshake_data);
+    // INTENTIONAL: send_anchor always succeeds on a freshly-created transport.
+    let _ = sender.send_anchor(handshake_data);
     info!("handshake sent, waiting for client...");
 
     // Wait for client handshake.
     if let Some(msg) = transport.recv().await {
-        if msg.header.msg_type() == Ok(remoteway_proto::header::MsgType::Handshake) {
+        if matches!(
+            msg.header.msg_type(),
+            Ok(remoteway_proto::header::MsgType::Handshake)
+        ) {
             info!("client handshake received");
         } else {
             anyhow::bail!("expected handshake, got msg_type={}", {
@@ -314,7 +328,9 @@ async fn run(cli: cli::Cli) -> Result<()> {
         }
         _ = async {
             if let Some(ref mut c) = child {
-                let _ = c.wait().await;
+                if let Err(e) = c.wait().await {
+                    tracing::warn!(error = %e, "error waiting for child process");
+                }
             } else {
                 std::future::pending::<()>().await;
             }
@@ -326,12 +342,21 @@ async fn run(cli: cli::Cli) -> Result<()> {
 
     // Wait for compress thread to finish.
     shutdown.store(true, Ordering::Release);
-    let _ = compress_handle.join();
+    if let Err(e) = compress_handle.join() {
+        tracing::warn!(
+            error = ?e,
+            "compress thread panicked"
+        );
+    }
 
     // Kill child if still running.
     if let Some(ref mut c) = child {
-        c.start_kill().ok();
-        let _ = c.wait().await;
+        if let Err(e) = c.start_kill() {
+            tracing::warn!(error = %e, "failed to send SIGKILL to child");
+        }
+        if let Err(e) = c.wait().await {
+            tracing::warn!(error = %e, "error waiting for child after kill");
+        }
     }
 
     info!("remoteway-server stopped");

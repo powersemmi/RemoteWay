@@ -16,7 +16,7 @@ fn arb_payload(max: usize) -> impl Strategy<Value = Vec<u8>> {
     prop::collection::vec(any::<u8>(), 0..max)
 }
 
-/// Build a single well-formed frame (LAST_CHUNK set) as raw bytes.
+/// Build a single well-formed frame (`LAST_CHUNK` set) as raw bytes.
 fn frame_bytes(stream_id: u16, msg_type: u8, payload: &[u8]) -> Vec<u8> {
     let mut hdr = FrameHeader::new(
         stream_id,

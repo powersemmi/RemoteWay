@@ -199,7 +199,7 @@ mod tests {
         let (fd, size) = create_keymap_fd(small).unwrap();
         assert_eq!(size, small.len() as u32 + 1);
         // Verify fd is valid.
-        let _ = fd.as_fd();
+        fd.as_fd();
     }
 
     #[test]

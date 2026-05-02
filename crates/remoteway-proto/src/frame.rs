@@ -7,15 +7,22 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 pub struct FrameMeta {
+    /// Frame width in pixels.
     pub width: u32,
+    /// Frame height in pixels.
     pub height: u32,
+    /// Row stride in bytes.
     pub stride: u32,
+    /// Number of [`WireRegion`] descriptors following this header.
     pub num_regions: u32,
 }
 
 impl FrameMeta {
+    /// Size of `FrameMeta` in bytes (always 16).
     pub const SIZE: usize = size_of::<Self>();
 
+    /// Create a new `FrameMeta` with the given dimensions.
+    #[must_use]
     pub fn new(width: u32, height: u32, stride: u32, num_regions: u32) -> Self {
         Self {
             width,
@@ -30,16 +37,24 @@ impl FrameMeta {
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 pub struct WireRegion {
+    /// Left edge of the dirty rectangle, in pixels.
     pub x: u32,
+    /// Top edge of the dirty rectangle, in pixels.
     pub y: u32,
+    /// Width of the dirty rectangle, in pixels.
     pub w: u32,
+    /// Height of the dirty rectangle, in pixels.
     pub h: u32,
+    /// Size of the compressed payload for this region.
     pub compressed_size: u32,
 }
 
 impl WireRegion {
+    /// Size of `WireRegion` in bytes (always 20).
     pub const SIZE: usize = size_of::<Self>();
 
+    /// Create a new `WireRegion` descriptor.
+    #[must_use]
     pub fn new(x: u32, y: u32, w: u32, h: u32, compressed_size: u32) -> Self {
         Self {
             x,

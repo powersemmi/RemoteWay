@@ -12,17 +12,18 @@ pub struct BandwidthMeter {
     label: String,
     /// Window duration over which to calculate bandwidth.
     window: Duration,
-    /// Total bytes in the current window.
+    /// Running total of bytes recorded (never pruned).
     window_bytes: u64,
 }
 
 /// Bandwidth snapshot.
 #[derive(Debug, Clone)]
 pub struct BandwidthStats {
+    /// Meter label (e.g. "capture", "encode").
     pub label: String,
     /// Bytes per second over the measurement window.
     pub bytes_per_sec: f64,
-    /// Megabits per second (bytes_per_sec * 8 / 1_000_000).
+    /// Megabits per second (`bytes_per_sec` * 8 / `1_000_000`).
     pub mbps: f64,
     /// Total bytes recorded.
     pub total_bytes: u64,
@@ -64,6 +65,7 @@ impl BandwidthMeter {
     }
 
     /// Get current bandwidth statistics.
+    #[must_use]
     pub fn stats(&self) -> BandwidthStats {
         let now = Instant::now();
         let cutoff = now.checked_sub(self.window).unwrap_or(now);

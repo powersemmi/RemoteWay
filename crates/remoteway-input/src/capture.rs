@@ -42,17 +42,17 @@ impl InputCapture {
             capabilities_received: false,
         };
 
-        display.get_registry(&qh, ());
+        let _ = display.get_registry(&qh, ()); // INTENTIONAL: WlRegistry managed by event queue
 
         // First roundtrip: discover globals (wl_seat).
-        event_queue.roundtrip(&mut state)?;
+        let _ = event_queue.roundtrip(&mut state)?; // INTENTIONAL: dispatch count irrelevant
 
         if state.seat.is_none() {
             return Err(InputError::NoSeat);
         }
 
         // Second roundtrip: receive seat capabilities and create pointer/keyboard.
-        event_queue.roundtrip(&mut state)?;
+        let _ = event_queue.roundtrip(&mut state)?; // INTENTIONAL: dispatch count irrelevant
 
         Ok(Self {
             _conn: conn,
@@ -69,7 +69,7 @@ impl InputCapture {
         self.state.pending_events.clear();
 
         // Dispatch pending events without blocking.
-        self.event_queue.dispatch_pending(&mut self.state)?;
+        let _ = self.event_queue.dispatch_pending(&mut self.state)?; // INTENTIONAL: dispatch count irrelevant
 
         // Also try to read from the socket if data is available.
         if let Some(guard) = self.event_queue.prepare_read() {
@@ -77,7 +77,7 @@ impl InputCapture {
             // WouldBlock is expected when no data is available.
             match guard.read() {
                 Ok(_) => {
-                    self.event_queue.dispatch_pending(&mut self.state)?;
+                    let _ = self.event_queue.dispatch_pending(&mut self.state)?; // INTENTIONAL: dispatch count irrelevant
                 }
                 Err(wayland_client::backend::WaylandError::Io(ref e))
                     if e.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -93,7 +93,7 @@ impl InputCapture {
     /// Blocking poll — waits for at least one event.
     pub fn poll_events_blocking(&mut self) -> Result<&[InputEvent], InputError> {
         self.state.pending_events.clear();
-        self.event_queue.blocking_dispatch(&mut self.state)?;
+        let _ = self.event_queue.blocking_dispatch(&mut self.state)?; // INTENTIONAL: dispatch count irrelevant
         Ok(&self.state.pending_events)
     }
 }
@@ -330,8 +330,7 @@ mod tests {
                 y: 200.0,
             });
             let decoded =
-                PointerMotion::ref_from_bytes(&ev.payload[..std::mem::size_of::<PointerMotion>()])
-                    .unwrap();
+                PointerMotion::ref_from_bytes(&ev.payload[..size_of::<PointerMotion>()]).unwrap();
             assert_eq!({ decoded.surface_id }, surface_id);
         }
     }
@@ -347,13 +346,10 @@ mod tests {
             button: 0x110,
             state: 1,
         });
-        let decoded_released = PointerButton::ref_from_bytes(
-            &released.payload[..std::mem::size_of::<PointerButton>()],
-        )
-        .unwrap();
+        let decoded_released =
+            PointerButton::ref_from_bytes(&released.payload[..size_of::<PointerButton>()]).unwrap();
         let decoded_pressed =
-            PointerButton::ref_from_bytes(&pressed.payload[..std::mem::size_of::<PointerButton>()])
-                .unwrap();
+            PointerButton::ref_from_bytes(&pressed.payload[..size_of::<PointerButton>()]).unwrap();
         assert_eq!({ decoded_released.state }, 0);
         assert_eq!({ decoded_pressed.state }, 1);
     }
@@ -372,11 +368,9 @@ mod tests {
             value: -3.0,
         });
         let decoded_v =
-            PointerAxis::ref_from_bytes(&vertical.payload[..std::mem::size_of::<PointerAxis>()])
-                .unwrap();
+            PointerAxis::ref_from_bytes(&vertical.payload[..size_of::<PointerAxis>()]).unwrap();
         let decoded_h =
-            PointerAxis::ref_from_bytes(&horizontal.payload[..std::mem::size_of::<PointerAxis>()])
-                .unwrap();
+            PointerAxis::ref_from_bytes(&horizontal.payload[..size_of::<PointerAxis>()]).unwrap();
         assert_eq!({ decoded_v.axis }, 0);
         assert_eq!({ decoded_h.axis }, 1);
         assert_eq!({ decoded_v.value }, 5.0);
@@ -389,9 +383,9 @@ mod tests {
         let released = InputEvent::key(KeyEvent { key: 30, state: 0 });
         let pressed = InputEvent::key(KeyEvent { key: 30, state: 1 });
         let decoded_released =
-            KeyEvent::ref_from_bytes(&released.payload[..std::mem::size_of::<KeyEvent>()]).unwrap();
+            KeyEvent::ref_from_bytes(&released.payload[..size_of::<KeyEvent>()]).unwrap();
         let decoded_pressed =
-            KeyEvent::ref_from_bytes(&pressed.payload[..std::mem::size_of::<KeyEvent>()]).unwrap();
+            KeyEvent::ref_from_bytes(&pressed.payload[..size_of::<KeyEvent>()]).unwrap();
         assert_eq!({ decoded_released.state }, 0);
         assert_eq!({ decoded_pressed.state }, 1);
     }
@@ -437,8 +431,7 @@ mod tests {
             y: y as f32,
         });
         let decoded =
-            PointerMotion::ref_from_bytes(&ev.payload[..std::mem::size_of::<PointerMotion>()])
-                .unwrap();
+            PointerMotion::ref_from_bytes(&ev.payload[..size_of::<PointerMotion>()]).unwrap();
         // f32 precision: within 0.001 of the original.
         assert!(({ decoded.x } - 123.456f32).abs() < 0.001);
         assert!(({ decoded.y } - 789.012f32).abs() < 0.001);
@@ -468,11 +461,11 @@ mod tests {
         assert_eq!(state.pending_events.len(), 50);
         // Verify first and last.
         let first = PointerMotion::ref_from_bytes(
-            &state.pending_events[0].payload[..std::mem::size_of::<PointerMotion>()],
+            &state.pending_events[0].payload[..size_of::<PointerMotion>()],
         )
         .unwrap();
         let last = PointerMotion::ref_from_bytes(
-            &state.pending_events[49].payload[..std::mem::size_of::<PointerMotion>()],
+            &state.pending_events[49].payload[..size_of::<PointerMotion>()],
         )
         .unwrap();
         assert_eq!({ first.x }, 0.0);
@@ -514,8 +507,7 @@ mod tests {
             _pad: [0; 3],
             value: -100.5,
         });
-        let decoded =
-            PointerAxis::ref_from_bytes(&ev.payload[..std::mem::size_of::<PointerAxis>()]).unwrap();
+        let decoded = PointerAxis::ref_from_bytes(&ev.payload[..size_of::<PointerAxis>()]).unwrap();
         assert_eq!({ decoded.value }, -100.5);
     }
 
@@ -529,8 +521,7 @@ mod tests {
             _pad: [0; 3],
             value: as_f32,
         });
-        let decoded =
-            PointerAxis::ref_from_bytes(&ev.payload[..std::mem::size_of::<PointerAxis>()]).unwrap();
+        let decoded = PointerAxis::ref_from_bytes(&ev.payload[..size_of::<PointerAxis>()]).unwrap();
         assert_eq!({ decoded.value }, 15.5f32);
     }
 }

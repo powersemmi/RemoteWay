@@ -1,3 +1,6 @@
+//! Client-side Wayland display module. `wl_shm` buffer management, surface rendering,
+//! cursor overlay, and presentation-time feedback.
+
 pub mod cursor;
 pub mod error;
 pub mod presentation;

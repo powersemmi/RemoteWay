@@ -7,30 +7,37 @@ use std::time::Duration;
 #[derive(Debug)]
 pub struct LatencyHistogram {
     /// Ring buffer of recent samples for percentile calculation.
-    samples: Vec<Duration>,
+    pub(crate) samples: Vec<Duration>,
     /// Next write position in the ring buffer.
-    cursor: usize,
+    pub(crate) cursor: usize,
     /// Number of samples recorded (may exceed capacity).
-    count: u64,
+    pub(crate) count: u64,
     /// Running sum for average calculation.
-    sum: Duration,
+    pub(crate) sum: Duration,
     /// Minimum observed latency.
-    min: Duration,
+    pub(crate) min: Duration,
     /// Maximum observed latency.
-    max: Duration,
+    pub(crate) max: Duration,
     /// Label for this histogram (e.g. "capture→compress", "end-to-end").
-    label: String,
+    pub(crate) label: String,
 }
 
 /// Snapshot of histogram statistics at a point in time.
 #[derive(Debug, Clone)]
 pub struct LatencyStats {
+    /// Histogram label (e.g. "capture→compress").
     pub label: String,
+    /// Total number of samples recorded.
     pub count: u64,
+    /// Minimum observed latency.
     pub min: Duration,
+    /// Maximum observed latency.
     pub max: Duration,
+    /// Arithmetic mean latency.
     pub avg: Duration,
+    /// 50th percentile (median) latency.
     pub p50: Duration,
+    /// 99th percentile latency.
     pub p99: Duration,
 }
 
@@ -77,6 +84,7 @@ impl LatencyHistogram {
     }
 
     /// Get current statistics snapshot.
+    #[must_use]
     pub fn stats(&self) -> LatencyStats {
         let avg = if self.count > 0 {
             self.sum / self.count as u32

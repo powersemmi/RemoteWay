@@ -3,13 +3,19 @@ use wide::u8x32;
 /// A rectangular region of a frame that changed since the previous frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DamageRect {
+    /// Left edge of the damaged region, in pixels.
     pub x: u32,
+    /// Top edge of the damaged region, in pixels.
     pub y: u32,
+    /// Width of the damaged region, in pixels.
     pub width: u32,
+    /// Height of the damaged region, in pixels.
     pub height: u32,
 }
 
 impl DamageRect {
+    /// Create a new damage rectangle.
+    #[must_use]
     pub fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
         Self {
             x,
@@ -19,6 +25,8 @@ impl DamageRect {
         }
     }
 
+    /// Number of pixels (RGBA quads) covered by this rect.
+    #[must_use]
     pub fn pixel_count(&self) -> usize {
         (self.width as usize) * (self.height as usize)
     }
@@ -109,7 +117,7 @@ fn xor_into_vec_simd(a: &[u8], b: &[u8], dst: &mut Vec<u8>) {
     }
 }
 
-/// Helper macro for array_ref slices (avoids unsafe indexing boilerplate).
+/// Helper macro for `array_ref` slices (avoids unsafe indexing boilerplate).
 macro_rules! array_ref {
     ($slice:expr, $offset:expr, $len:expr) => {{
         let slice: &[u8] = &$slice[$offset..$offset + $len];
@@ -328,7 +336,7 @@ mod tests {
         delta_encode_scalar(&current, &previous, stride, &regions, &mut delta_s);
         delta_encode_simd(&current, &previous, stride, &regions, &mut delta_v);
         assert_eq!(delta_s, delta_v);
-        assert_eq!(delta_s.len(), 2 * 4); // 1×2 pixels × 4 bytes
+        assert_eq!(delta_s.len(), 2 * 4); // 1×2 pixels
     }
 
     #[test]

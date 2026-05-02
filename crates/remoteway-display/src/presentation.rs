@@ -23,6 +23,7 @@ pub struct PresentationSync {
 
 impl PresentationSync {
     /// Create a new presentation sync tracker.
+    #[must_use]
     pub fn new(presentation: wp_presentation::WpPresentation, clock_id: u32) -> Self {
         Self {
             presentation,
@@ -43,7 +44,9 @@ impl PresentationSync {
         surface: &wl_surface::WlSurface,
         qh: &QueueHandle<DisplayState>,
     ) {
-        self.presentation.feedback(surface, qh, ());
+        // The returned WpPresentationFeedback proxy is managed internally by the
+        // Wayland event queue; we receive its events via the Dispatch impl below.
+        let _ = self.presentation.feedback(surface, qh, ());
     }
 
     /// Record a presentation timestamp from feedback.
@@ -69,21 +72,25 @@ impl PresentationSync {
     }
 
     /// Timestamp of the last successfully presented frame.
+    #[must_use]
     pub fn last_presented_ns(&self) -> u64 {
         self.last_presented_ns
     }
 
     /// Measured frame interval in nanoseconds (smoothed).
+    #[must_use]
     pub fn frame_interval_ns(&self) -> u64 {
         self.frame_interval_ns
     }
 
     /// Clock ID from the compositor.
+    #[must_use]
     pub fn clock_id(&self) -> u32 {
         self.clock_id
     }
 
     /// Number of feedback samples collected.
+    #[must_use]
     pub fn sample_count(&self) -> u64 {
         self.sample_count
     }
@@ -183,8 +190,8 @@ mod tests {
         assert!(frame_interval < 17_000_000);
     }
 
-    /// Test that the first record sets last_presented_ns but does NOT update interval
-    /// (because last_presented_ns == 0 initially).
+    /// Test that the first record sets `last_presented_ns` but does NOT update interval
+    /// (because `last_presented_ns` == 0 initially).
     #[test]
     fn first_record_does_not_update_interval() {
         let default_interval = 16_666_667u64;
@@ -243,7 +250,7 @@ mod tests {
         let default_interval = 16_666_667u64;
         let mut last_ns = 100_000_000u64;
         let mut frame_interval = default_interval;
-        let count = 2u64;
+        // sample count = 2
 
         let ts = 100_000_000u64; // same as last
         let interval = ts.saturating_sub(last_ns); // 0
@@ -255,7 +262,6 @@ mod tests {
 
         assert_eq!(frame_interval, default_interval);
         assert_eq!(last_ns, ts);
-        let _ = count;
     }
 
     /// First 4 samples use direct assignment; starting from sample 4 use EMA.
@@ -323,7 +329,7 @@ mod tests {
         );
     }
 
-    /// saturating_sub prevents underflow when timestamps are out of order
+    /// `saturating_sub` prevents underflow when timestamps are out of order
     /// (which shouldn't happen but is handled defensively).
     #[test]
     fn saturating_sub_prevents_underflow() {
@@ -333,7 +339,7 @@ mod tests {
         assert_eq!(interval, 0);
     }
 
-    /// Exactly at the boundary: 99_999_999 ns should be accepted.
+    /// Exactly at the boundary: `99_999_999` ns should be accepted.
     #[test]
     fn boundary_interval_accepted() {
         let last_ns = 100_000_000u64;
@@ -438,7 +444,7 @@ mod tests {
         );
     }
 
-    /// Verify sample_count increments correctly.
+    /// Verify `sample_count` increments correctly.
     #[test]
     fn sample_count_increments() {
         let mut count = 0u64;
@@ -448,7 +454,7 @@ mod tests {
         assert_eq!(count, 100);
     }
 
-    /// record_discarded is a no-op but should not panic.
+    /// `record_discarded` is a no-op but should not panic.
     #[test]
     fn record_discarded_is_noop() {
         // The method body is empty — just ensure it doesn't panic.

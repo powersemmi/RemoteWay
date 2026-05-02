@@ -1,3 +1,6 @@
+//! Input capture and injection for `RemoteWay`. Server-side virtual pointer/keyboard
+//! injection; client-side input capture.
+
 pub mod capture;
 pub mod capture_thread;
 pub mod error;

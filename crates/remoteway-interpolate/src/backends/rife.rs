@@ -52,6 +52,11 @@ impl RifeInterpolator {
     ///
     /// Verifies that the model file exists on disk. Does not load
     /// the model until the first interpolation call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InterpolateError::InitFailed`] if the model file does not
+    /// exist, cannot be read, or is empty.
     pub fn new(model_path: PathBuf) -> Result<Self, InterpolateError> {
         if !model_path.exists() {
             return Err(InterpolateError::InitFailed(format!(
@@ -83,6 +88,11 @@ impl RifeInterpolator {
     /// 1. `$XDG_DATA_HOME/remoteway/models/rife-v4.6.bin`
     /// 2. `$HOME/.local/share/remoteway/models/rife-v4.6.bin`
     /// 3. `/usr/share/remoteway/models/rife-v4.6.bin`
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InterpolateError::InitFailed`] if no model file is found
+    /// in any of the default locations.
     pub fn from_default_path() -> Result<Self, InterpolateError> {
         let candidates = default_model_paths();
         for path in &candidates {
@@ -102,6 +112,7 @@ impl RifeInterpolator {
     }
 
     /// Get the model file path.
+    #[must_use]
     pub fn model_path(&self) -> &PathBuf {
         &self.model_path
     }
@@ -140,7 +151,7 @@ impl FrameInterpolator for RifeInterpolator {
         8.0
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "rife"
     }
 }
@@ -245,7 +256,7 @@ mod tests {
                 .contains("runtime not linked")
         );
 
-        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::remove_dir_all(&dir);
     }
 
     #[test]

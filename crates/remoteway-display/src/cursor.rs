@@ -28,7 +28,7 @@ pub struct CursorOverlay {
     last_enter_serial: u32,
 }
 
-/// Holds cursor bitmap data in a wl_shm buffer.
+/// Holds cursor bitmap data in a `wl_shm` buffer.
 struct CursorBuffer {
     _fd: OwnedFd,
     map: NonNull<std::ffi::c_void>,
@@ -47,6 +47,7 @@ impl Drop for CursorBuffer {
         self.buffer.destroy();
         self.pool.destroy();
         // SAFETY: map was created with mmap of map_size bytes.
+        // INTENTIONAL: munmap failure during cleanup is not actionable.
         unsafe {
             let _ = munmap(self.map, self.map_size);
         }
@@ -55,6 +56,7 @@ impl Drop for CursorBuffer {
 
 impl CursorOverlay {
     /// Create a new cursor overlay.
+    #[must_use]
     pub fn new(compositor: &wl_compositor::WlCompositor, qh: &QueueHandle<DisplayState>) -> Self {
         // Cursor surface uses a sentinel surface_id (u16::MAX).
         let surface = compositor.create_surface(qh, u16::MAX);
@@ -77,7 +79,7 @@ impl CursorOverlay {
         self.current_y = y;
     }
 
-    /// Record the serial from a wl_pointer.enter event (needed for set_cursor).
+    /// Record the serial from a `wl_pointer.enter` event (needed for `set_cursor`).
     pub fn set_enter_serial(&mut self, serial: u32) {
         self.last_enter_serial = serial;
     }
@@ -137,10 +139,12 @@ impl CursorOverlay {
         pointer.set_cursor(self.last_enter_serial, None, 0, 0);
     }
 
+    #[must_use]
     pub fn position(&self) -> (f32, f32) {
         (self.current_x, self.current_y)
     }
 
+    #[must_use]
     pub fn has_server_cursor(&self) -> bool {
         self.has_server_cursor
     }
@@ -155,6 +159,11 @@ impl CursorOverlay {
     ) -> Result<(), DisplayError> {
         let stride = width * 4;
         let buf_size = stride as usize * height as usize;
+        if buf_size == 0 {
+            return Err(DisplayError::ShmBuffer(
+                "cursor bitmap has zero size".into(),
+            ));
+        }
         if data.len() < buf_size {
             return Err(DisplayError::ShmBuffer(
                 "cursor bitmap data too small".into(),
@@ -170,11 +179,13 @@ impl CursorOverlay {
         nix::unistd::ftruncate(&fd, buf_size as i64)
             .map_err(|e| DisplayError::ShmBuffer(format!("cursor ftruncate failed: {e}")))?;
 
-        // SAFETY: fd is valid, buf_size > 0.
+        // SAFETY: fd is valid, buf_size > 0 (checked above).
         let map = unsafe {
             nix::sys::mman::mmap(
                 None,
-                std::num::NonZero::new(buf_size).unwrap(),
+                // INVARIANT: buf_size > 0 is enforced by the check at the top of this function.
+                #[allow(clippy::expect_used)]
+                std::num::NonZero::new(buf_size).expect("buf_size > 0 enforced by check above"),
                 ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
                 MapFlags::MAP_SHARED,
                 &fd,
@@ -272,7 +283,7 @@ mod tests {
         }
     }
 
-    /// The bitmap data validation: data.len() must be >= stride * height.
+    /// The bitmap data validation: `data.len()` must be >= stride * height.
     #[test]
     fn bitmap_data_too_small_detection() {
         let width = 32u32;
@@ -320,7 +331,7 @@ mod tests {
         assert_eq!(hy, -20);
     }
 
-    /// has_bitmap flag controls whether bitmap data is expected.
+    /// `has_bitmap` flag controls whether bitmap data is expected.
     #[test]
     fn cursor_update_has_bitmap_flag() {
         let with_bitmap = CursorUpdate {
@@ -350,7 +361,7 @@ mod tests {
         assert_eq!({ without_bitmap.has_bitmap }, 0);
     }
 
-    /// Position tracking: update_position sets current_x/y independently.
+    /// Position tracking: `update_position` sets `current_x/y` independently.
     #[test]
     fn position_update_logic() {
         let mut x: f32;
@@ -369,7 +380,7 @@ mod tests {
         assert_eq!(y, -20.0);
     }
 
-    /// set_enter_serial stores the serial needed for set_cursor.
+    /// `set_enter_serial` stores the serial needed for `set_cursor`.
     #[test]
     fn enter_serial_storage() {
         let mut serial: u32;
@@ -379,7 +390,7 @@ mod tests {
         assert_eq!(serial, u32::MAX);
     }
 
-    /// has_server_cursor flag starts false, becomes true after bitmap set.
+    /// `has_server_cursor` flag starts false, becomes true after bitmap set.
     #[test]
     fn server_cursor_flag_logic() {
         let mut has_server_cursor = false;
@@ -390,7 +401,7 @@ mod tests {
         assert!(has_server_cursor);
     }
 
-    /// CursorUpdate with large bitmap dimensions.
+    /// `CursorUpdate` with large bitmap dimensions.
     #[test]
     fn cursor_update_large_bitmap() {
         let update = CursorUpdate {
@@ -411,7 +422,7 @@ mod tests {
         assert_eq!(buf_size, 256 * 256 * 4);
     }
 
-    /// Verify the sentinel surface_id used for cursor surface.
+    /// Verify the sentinel `surface_id` used for cursor surface.
     #[test]
     fn cursor_surface_uses_sentinel_id() {
         let sentinel = u16::MAX;
@@ -419,7 +430,7 @@ mod tests {
         // This is used in CursorOverlay::new to create the cursor surface.
     }
 
-    /// The apply_cursor_update logic: bitmap_data=None skips bitmap creation.
+    /// The `apply_cursor_update` logic: `bitmap_data=None` skips bitmap creation.
     #[test]
     fn apply_cursor_update_logic_no_bitmap() {
         let update = CursorUpdate {
@@ -440,7 +451,7 @@ mod tests {
         assert!(!should_create);
     }
 
-    /// The apply_cursor_update logic: both conditions must be true.
+    /// The `apply_cursor_update` logic: both conditions must be true.
     #[test]
     fn apply_cursor_update_logic_with_bitmap() {
         let update = CursorUpdate {
@@ -461,7 +472,7 @@ mod tests {
         assert!(should_create);
     }
 
-    /// has_bitmap=0 with bitmap_data present: no bitmap created.
+    /// `has_bitmap=0` with `bitmap_data` present: no bitmap created.
     #[test]
     fn apply_cursor_update_no_flag_with_data() {
         let update = CursorUpdate {

@@ -24,9 +24,9 @@ pub struct WlrScreencopyBackend {
 /// Tracks an output discovered during global enumeration.
 struct DiscoveredOutput {
     wl_output: wl_output::WlOutput,
-    /// The compositor name (e.g., "HDMI-A-1"), filled in from wl_output.name event.
+    /// The compositor name (e.g., "HDMI-A-1"), filled in from `wl_output.name` event.
     name: String,
-    /// The Wayland global name for matching wl_output events to this entry.
+    /// The Wayland global name for matching `wl_output` events to this entry.
     global_name: u32,
 }
 
@@ -88,10 +88,13 @@ impl WlrScreencopyBackend {
             stopped: false,
         };
 
-        display.get_registry(&qh, ());
+        // The WlRegistry is not stored — globals arrive as events
+        // dispatched through the queue.
+        let _registry = display.get_registry(&qh, ());
 
         // First round-trip: discover globals (wl_shm, wl_output, screencopy manager).
-        event_queue.roundtrip(&mut state)?;
+        let dispatched = event_queue.roundtrip(&mut state)?;
+        tracing::trace!(dispatched, "screencopy: first roundtrip");
 
         if state.screencopy_manager.is_none() {
             return Err(CaptureError::NoBackend);
@@ -104,7 +107,8 @@ impl WlrScreencopyBackend {
         }
 
         // Second round-trip: receive wl_output.name events (version 4+).
-        event_queue.roundtrip(&mut state)?;
+        let dispatched = event_queue.roundtrip(&mut state)?;
+        tracing::trace!(dispatched, "screencopy: second roundtrip");
 
         // Select the output — by name or first available.
         let selected = if let Some(name) = output_name {
@@ -127,12 +131,20 @@ impl WlrScreencopyBackend {
     }
 
     /// Check if wlr-screencopy is available on the given connection.
+    #[must_use]
     pub fn is_available(conn: &Connection) -> bool {
         let mut eq = conn.new_event_queue::<ScreencopyProbe>();
         let qh = eq.handle();
         let mut probe = ScreencopyProbe { found: false };
-        conn.display().get_registry(&qh, ());
-        let _ = eq.roundtrip(&mut probe);
+        // The WlRegistry is not needed — globals arrive through dispatch.
+        let _registry = conn.display().get_registry(&qh, ());
+        // If the roundtrip fails (e.g. compositor disconnected), treat the
+        // backend as unavailable.
+        let dispatched = match eq.roundtrip(&mut probe) {
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        tracing::trace!(dispatched, "screencopy probe roundtrip");
         probe.found
     }
 }
@@ -169,7 +181,8 @@ impl CaptureBackend for WlrScreencopyBackend {
         // call copy. This prevents queueing pool creation and copy in the same
         // flush (compositor needs to process the pool fd first).
         while !self.state.buffer_done && !self.state.frame_failed {
-            self.event_queue.blocking_dispatch(&mut self.state)?;
+            let dispatched = self.event_queue.blocking_dispatch(&mut self.state)?;
+            tracing::trace!(dispatched, "screencopy phase 1: blocking_dispatch");
         }
 
         if self.state.frame_failed {
@@ -229,7 +242,8 @@ impl CaptureBackend for WlrScreencopyBackend {
         // `copy`. Run unconditionally — for an existing pool, the round-trip
         // is cheap (no new requests are pending) but it guarantees the
         // compositor has fully drained any prior buffer release events.
-        self.event_queue.roundtrip(&mut self.state)?;
+        let dispatched = self.event_queue.roundtrip(&mut self.state)?;
+        tracing::trace!(dispatched, "screencopy: pool creation roundtrip completed");
 
         // Attach buffer and request copy. We use `copy` (not `copy_with_damage`)
         // because the latter blocks until the compositor sees fresh damage,
@@ -248,7 +262,8 @@ impl CaptureBackend for WlrScreencopyBackend {
 
         // Phase 2: dispatch until Ready or Failed.
         while !self.state.frame_ready && !self.state.frame_failed {
-            self.event_queue.blocking_dispatch(&mut self.state)?;
+            let dispatched = self.event_queue.blocking_dispatch(&mut self.state)?;
+            tracing::trace!(dispatched, "screencopy phase 2: blocking_dispatch");
         }
 
         // Frame object is single-shot — destroy regardless of outcome.
@@ -440,7 +455,7 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, ()> for Screencop
             } => {
                 let wl_format = match format {
                     WEnum::Value(f) => f,
-                    _ => {
+                    WEnum::Unknown(_) => {
                         state.frame_failed = true;
                         return;
                     }

@@ -4,11 +4,19 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Protocol types and serialization (no_std compatible)"
 
 [dependencies]
-zerocopy = { version = "0.8", features = ["derive"] }
-thiserror = "2"
+zerocopy.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
-proptest = "1"
+proptest.workspace = true
+
+[lints]
+workspace = true

@@ -2,12 +2,16 @@ use std::thread::{self, JoinHandle};
 
 use thiserror::Error;
 
+/// Errors that can occur when configuring or spawning a pipeline thread.
 #[derive(Debug, Error)]
 pub enum ThreadConfigError {
+    /// Failed to pin the thread to the requested core.
     #[error("failed to set core affinity for core {0}")]
     CoreAffinity(usize),
+    /// The `sched_setscheduler` syscall returned a non-zero errno.
     #[error("sched_setscheduler failed: errno {0}")]
     SchedSetScheduler(i32),
+    /// The OS could not spawn the thread.
     #[error("thread spawn failed: {0}")]
     Spawn(#[from] std::io::Error),
 }
@@ -17,13 +21,14 @@ pub enum ThreadConfigError {
 pub struct ThreadConfig {
     /// Core to pin this thread to.
     pub core_id: usize,
-    /// SCHED_FIFO priority (1-99). 0 means default scheduling.
+    /// `SCHED_FIFO` priority (1-99). 0 means default scheduling.
     pub sched_priority: u8,
     /// Thread name shown in `ps`/`htop`.
     pub name: String,
 }
 
 impl ThreadConfig {
+    /// Create a new `ThreadConfig` with the given core, priority, and name.
     pub fn new(core_id: usize, sched_priority: u8, name: impl Into<String>) -> Self {
         Self {
             core_id,
@@ -61,7 +66,7 @@ impl ThreadConfig {
         unsafe {
             let mut cpu_set: libc::cpu_set_t = std::mem::zeroed();
             libc::CPU_SET(core_id, &mut cpu_set);
-            let ret = libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &cpu_set);
+            let ret = libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &cpu_set);
             if ret != 0 {
                 eprintln!(
                     "sched_setaffinity core {} failed: errno {}",
@@ -112,8 +117,8 @@ mod tests {
         assert_eq!(handle.join().unwrap(), "named-thread");
     }
 
-    /// Spawning with nonzero priority exercises apply_sched_fifo.
-    /// Without CAP_SYS_NICE the syscall fails silently (eprintln only),
+    /// Spawning with nonzero priority exercises `apply_sched_fifo`.
+    /// Without `CAP_SYS_NICE` the syscall fails silently (eprintln only),
     /// but the closure still runs — verifying no panic on the error path.
     #[test]
     fn nonzero_priority_no_panic() {
@@ -173,9 +178,9 @@ mod tests {
         assert!(e.to_string().contains("test error"));
     }
 
-    /// Verify that SCHED_FIFO priority is actually applied.
-    /// Requires CAP_SYS_NICE or a non-zero RLIMIT_RTPRIO — run with:
-    ///   sudo cargo test -p remoteway-core -- --ignored sched_fifo_priority_applied
+    /// Verify that `SCHED_FIFO` priority is actually applied.
+    /// Requires `CAP_SYS_NICE` or a non-zero `RLIMIT_RTPRIO` — run with:
+    ///   sudo cargo test -p remoteway-core -- --ignored `sched_fifo_priority_applied`
     #[test]
     #[ignore = "requires CAP_SYS_NICE / elevated RLIMIT_RTPRIO"]
     #[cfg(target_os = "linux")]

@@ -32,6 +32,7 @@ fn display_error_debug() {
 
 #[test]
 fn wayland_display_fails_without_display() {
+    // SAFETY: removing env var in test setup is safe — this is the only test using it.
     unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
     let result = WaylandDisplay::new();
     assert!(result.is_err());
@@ -189,7 +190,7 @@ fn display_error_no_seat_message() {
     assert!(e.to_string().contains("seat"));
 }
 
-/// Verify DamageRegion can represent full-frame damage for common resolutions.
+/// Verify `DamageRegion` can represent full-frame damage for common resolutions.
 #[test]
 fn damage_region_common_resolutions() {
     let resolutions: Vec<(u32, u32, usize)> = vec![
@@ -210,7 +211,7 @@ fn damage_region_common_resolutions() {
     }
 }
 
-/// Test that DisplayThreadConfig default values are reasonable.
+/// Test that `DisplayThreadConfig` default values are reasonable.
 #[test]
 fn display_thread_config_defaults_reasonable() {
     let cfg = DisplayThreadConfig::default();
@@ -223,7 +224,7 @@ fn display_thread_config_defaults_reasonable() {
     assert!(cfg.ring_capacity <= 64);
 }
 
-/// Stress test: create many DisplayFrame objects.
+/// Stress test: create many `DisplayFrame` objects.
 #[test]
 fn display_frame_batch_creation() {
     let frames: Vec<DisplayFrame> = (0..100u16)
@@ -268,7 +269,7 @@ fn display_frame_stride_consistency() {
     }
 }
 
-/// Verify DisplayFrame is large enough to hold the pixel data.
+/// Verify `DisplayFrame` is large enough to hold the pixel data.
 #[test]
 fn display_frame_data_size_matches_dimensions() {
     let frame = DisplayFrame {

@@ -1,14 +1,22 @@
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
+use crate::ProtoError;
+
 /// Message type discriminant (1 byte).
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MsgType {
+    /// Compressed frame delta or full frame.
     FrameUpdate = 0,
+    /// Full key-frame used as a reference for delta decoding.
     AnchorFrame = 1,
+    /// Keyboard / pointer input event.
     InputEvent = 2,
+    /// Cursor position and hotspot update.
     CursorMove = 3,
+    /// Initial protocol negotiation payload.
     Handshake = 4,
+    /// Acknowledgement of a received message.
     Ack = 5,
     /// Surface resize notification (server→client or client→server).
     Resize = 6,
@@ -19,8 +27,8 @@ pub enum MsgType {
 }
 
 impl TryFrom<u8> for MsgType {
-    type Error = u8;
-    fn try_from(v: u8) -> Result<Self, u8> {
+    type Error = ProtoError;
+    fn try_from(v: u8) -> Result<Self, ProtoError> {
         match v {
             0 => Ok(Self::FrameUpdate),
             1 => Ok(Self::AnchorFrame),
@@ -31,15 +39,18 @@ impl TryFrom<u8> for MsgType {
             6 => Ok(Self::Resize),
             7 => Ok(Self::Clipboard),
             8 => Ok(Self::TargetResolution),
-            other => Err(other),
+            other => Err(ProtoError::UnknownMsgType(other)),
         }
     }
 }
 
 /// Frame flags bitfield.
 pub mod flags {
+    /// Payload is compressed (LZ4 or ZSTD).
     pub const COMPRESSED: u8 = 1 << 0;
+    /// This is the final chunk of a multi-chunk frame.
     pub const LAST_CHUNK: u8 = 1 << 1;
+    /// This frame is a key-frame (can be decoded independently).
     pub const KEY_FRAME: u8 = 1 << 2;
 }
 
@@ -56,18 +67,23 @@ pub struct FrameHeader {
     pub msg_type: u8,
     /// Bitfield from [`flags`].
     pub flags: u8,
+    /// Length of the payload following this header.
     pub payload_len: u32,
+    /// Capture timestamp in nanoseconds (monotonic clock).
     pub timestamp_ns: u64,
 }
 
 const _: () = assert!(
-    std::mem::size_of::<FrameHeader>() == 16,
+    size_of::<FrameHeader>() == 16,
     "FrameHeader must be exactly 16 bytes"
 );
 
 impl FrameHeader {
+    /// Size of `FrameHeader` in bytes (always 16).
     pub const SIZE: usize = 16;
 
+    /// Create a new `FrameHeader` with the given fields.
+    #[must_use]
     pub fn new(
         stream_id: u16,
         msg_type: MsgType,
@@ -84,7 +100,8 @@ impl FrameHeader {
         }
     }
 
-    pub fn msg_type(&self) -> Result<MsgType, u8> {
+    /// Decode the `msg_type` byte into a [`MsgType`] discriminant.
+    pub fn msg_type(&self) -> Result<MsgType, ProtoError> {
         MsgType::try_from(self.msg_type)
     }
 }
@@ -97,7 +114,7 @@ mod tests {
 
     #[test]
     fn size_is_16_bytes() {
-        assert_eq!(std::mem::size_of::<FrameHeader>(), 16);
+        assert_eq!(size_of::<FrameHeader>(), 16);
     }
 
     #[test]
@@ -149,6 +166,6 @@ mod tests {
 
     #[test]
     fn size_const_matches_sizeof() {
-        assert_eq!(FrameHeader::SIZE, std::mem::size_of::<FrameHeader>());
+        assert_eq!(FrameHeader::SIZE, size_of::<FrameHeader>());
     }
 }

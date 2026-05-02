@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::mem::size_of;
 use std::sync::Mutex;
 
 use crate::error::InterpolateError;
@@ -294,7 +296,7 @@ fn mix_channel(p00: u32, p10: u32, p01: u32, p11: u32, dx: f32, dy: f32, shift: 
 "#;
 
 /// Block on a wgpu native future (completes in one poll on Vulkan/Metal/DX12).
-fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+fn block_on<F: Future>(fut: F) -> F::Output {
     let waker = std::task::Waker::noop();
     let mut cx = std::task::Context::from_waker(waker);
     // Safety: we only call this for wgpu-core native futures which resolve immediately.
@@ -305,6 +307,7 @@ fn block_on<F: std::future::Future>(fut: F) -> F::Output {
 }
 
 /// Check if a wgpu adapter is available on this system.
+#[must_use]
 pub fn is_available() -> bool {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -402,7 +405,10 @@ impl WgpuOpticalFlowInterpolator {
     }
 
     fn ensure_buffers(&self, width: u32, height: u32) -> Result<(), InterpolateError> {
-        let mut guard = self.buffers.lock().unwrap();
+        let mut guard = self
+            .buffers
+            .lock()
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("mutex poisoned: {e}")))?;
         if let Some(ref b) = *guard
             && b.width == width
             && b.height == height
@@ -474,7 +480,7 @@ impl WgpuOpticalFlowInterpolator {
         );
         let params = make_buf(
             "params",
-            std::mem::size_of::<Params>() as u64,
+            size_of::<Params>() as u64,
             wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         );
 
@@ -506,8 +512,13 @@ impl WgpuOpticalFlowInterpolator {
         let h = a.height;
         self.ensure_buffers(w, h)?;
 
-        let guard = self.buffers.lock().unwrap();
-        let bufs = guard.as_ref().unwrap();
+        let guard = self
+            .buffers
+            .lock()
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("mutex poisoned: {e}")))?;
+        let bufs = guard.as_ref().ok_or_else(|| {
+            InterpolateError::InterpolateFailed("buffers unexpectedly None".into())
+        })?;
 
         // Upload frame data.
         self.queue.write_buffer(&bufs.frame_a, 0, &a.data);
@@ -581,7 +592,8 @@ impl WgpuOpticalFlowInterpolator {
         let frame_bytes = (w * h * 4) as u64;
         encoder.copy_buffer_to_buffer(&bufs.output, 0, &bufs.staging, 0, frame_bytes);
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        // The SubmissionIndex is informational; buffer mapping below synchronizes.
+        let _ = self.queue.submit(std::iter::once(encoder.finish()));
 
         // Map staging buffer and read back.
         let buffer_slice = bufs.staging.slice(..);
@@ -589,7 +601,16 @@ impl WgpuOpticalFlowInterpolator {
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        // INTENTIONAL: MaintainResult doesn't impl Debug/PartialEq.
+        // We rely on the subsequent recv() for actual error detection.
+        if !matches!(
+            self.device.poll(wgpu::Maintain::Wait),
+            wgpu::MaintainResult::Ok
+        ) {
+            return Err(InterpolateError::InterpolateFailed(
+                "wgpu device poll returned non-Ok status".into(),
+            ));
+        }
 
         rx.recv()
             .map_err(|_| InterpolateError::InterpolateFailed("buffer map cancelled".into()))?
@@ -708,7 +729,7 @@ mod tests {
 
     #[test]
     fn params_layout() {
-        assert_eq!(std::mem::size_of::<Params>(), 32);
+        assert_eq!(size_of::<Params>(), 32);
     }
 
     #[test]

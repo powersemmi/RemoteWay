@@ -63,10 +63,10 @@ impl VirtualInput {
             virtual_keyboard: None,
         };
 
-        display.get_registry(&qh, ());
+        let _ = display.get_registry(&qh, ()); // INTENTIONAL: WlRegistry managed by event queue
 
         // First roundtrip: discover globals.
-        event_queue.roundtrip(&mut state)?;
+        let _ = event_queue.roundtrip(&mut state)?; // INTENTIONAL: dispatch count irrelevant
 
         let seat = state.seat.as_ref().ok_or(InputError::NoSeat)?;
         let vp_mgr = state
@@ -92,7 +92,7 @@ impl VirtualInput {
         state.virtual_keyboard = Some(vk);
 
         // Second roundtrip: process any protocol responses.
-        event_queue.roundtrip(&mut state)?;
+        let _ = event_queue.roundtrip(&mut state)?; // INTENTIONAL: dispatch count irrelevant
 
         Ok(Self {
             conn,
@@ -111,30 +111,29 @@ impl VirtualInput {
 
         match kind {
             InputKind::PointerMotion => {
-                let motion = PointerMotion::ref_from_bytes(
-                    &event.payload[..std::mem::size_of::<PointerMotion>()],
-                )
-                .map_err(|e| InputError::InjectFailed(format!("decode PointerMotion: {e}")))?;
+                let motion =
+                    PointerMotion::ref_from_bytes(&event.payload[..size_of::<PointerMotion>()])
+                        .map_err(|e| {
+                            InputError::InjectFailed(format!("decode PointerMotion: {e}"))
+                        })?;
                 self.inject_pointer_motion(time, motion);
             }
             InputKind::PointerButton => {
-                let btn = PointerButton::ref_from_bytes(
-                    &event.payload[..std::mem::size_of::<PointerButton>()],
-                )
-                .map_err(|e| InputError::InjectFailed(format!("decode PointerButton: {e}")))?;
+                let btn =
+                    PointerButton::ref_from_bytes(&event.payload[..size_of::<PointerButton>()])
+                        .map_err(|e| {
+                            InputError::InjectFailed(format!("decode PointerButton: {e}"))
+                        })?;
                 self.inject_pointer_button(time, btn);
             }
             InputKind::PointerAxis => {
-                let axis = PointerAxis::ref_from_bytes(
-                    &event.payload[..std::mem::size_of::<PointerAxis>()],
-                )
-                .map_err(|e| InputError::InjectFailed(format!("decode PointerAxis: {e}")))?;
+                let axis = PointerAxis::ref_from_bytes(&event.payload[..size_of::<PointerAxis>()])
+                    .map_err(|e| InputError::InjectFailed(format!("decode PointerAxis: {e}")))?;
                 self.inject_pointer_axis(time, axis);
             }
             InputKind::Key => {
-                let key =
-                    KeyEvent::ref_from_bytes(&event.payload[..std::mem::size_of::<KeyEvent>()])
-                        .map_err(|e| InputError::InjectFailed(format!("decode KeyEvent: {e}")))?;
+                let key = KeyEvent::ref_from_bytes(&event.payload[..size_of::<KeyEvent>()])
+                    .map_err(|e| InputError::InjectFailed(format!("decode KeyEvent: {e}")))?;
                 self.inject_key(time, key);
             }
         }
@@ -147,7 +146,9 @@ impl VirtualInput {
     /// Should be called after dispatching a batch of events to ensure
     /// they are actually sent over the socket.
     pub fn flush(&self) {
-        let _ = self.conn.flush();
+        if let Err(e) = self.conn.flush() {
+            tracing::warn!("flush error: {e}");
+        }
     }
 
     fn inject_pointer_motion(&self, time: u32, motion: &PointerMotion) {
@@ -390,8 +391,7 @@ mod tests {
         };
         let ev = InputEvent::pointer_motion(motion);
         let decoded =
-            PointerMotion::ref_from_bytes(&ev.payload[..std::mem::size_of::<PointerMotion>()])
-                .expect("decode should succeed");
+            PointerMotion::ref_from_bytes(&ev.payload[..size_of::<PointerMotion>()]).unwrap();
         assert_eq!({ decoded.surface_id }, 42);
         assert_eq!({ decoded.x }, 1920.0);
         assert_eq!({ decoded.y }, 1080.0);
@@ -406,8 +406,7 @@ mod tests {
             };
             let ev = InputEvent::pointer_button(btn);
             let decoded =
-                PointerButton::ref_from_bytes(&ev.payload[..std::mem::size_of::<PointerButton>()])
-                    .expect("decode should succeed");
+                PointerButton::ref_from_bytes(&ev.payload[..size_of::<PointerButton>()]).unwrap();
             assert_eq!(
                 { decoded.state },
                 state_val,
@@ -427,8 +426,7 @@ mod tests {
             };
             let ev = InputEvent::pointer_axis(axis);
             let decoded =
-                PointerAxis::ref_from_bytes(&ev.payload[..std::mem::size_of::<PointerAxis>()])
-                    .expect("decode should succeed");
+                PointerAxis::ref_from_bytes(&ev.payload[..size_of::<PointerAxis>()]).unwrap();
             assert_eq!({ decoded.axis }, axis_val);
             assert_eq!({ decoded.value }, expected_val);
         }
@@ -438,8 +436,7 @@ mod tests {
     fn key_event_payload_decode() {
         let key = KeyEvent { key: 30, state: 1 };
         let ev = InputEvent::key(key);
-        let decoded = KeyEvent::ref_from_bytes(&ev.payload[..std::mem::size_of::<KeyEvent>()])
-            .expect("decode should succeed");
+        let decoded = KeyEvent::ref_from_bytes(&ev.payload[..size_of::<KeyEvent>()]).unwrap();
         assert_eq!({ decoded.key }, 30);
         assert_eq!({ decoded.state }, 1);
     }
@@ -448,8 +445,7 @@ mod tests {
     fn key_event_payload_decode_repeat_state() {
         let key = KeyEvent { key: 28, state: 2 };
         let ev = InputEvent::key(key);
-        let decoded = KeyEvent::ref_from_bytes(&ev.payload[..std::mem::size_of::<KeyEvent>()])
-            .expect("decode should succeed");
+        let decoded = KeyEvent::ref_from_bytes(&ev.payload[..size_of::<KeyEvent>()]).unwrap();
         assert_eq!({ decoded.key }, 28);
         assert_eq!({ decoded.state }, 2);
     }
@@ -493,26 +489,21 @@ mod tests {
             let kind = ev.kind().unwrap();
             match kind {
                 remoteway_proto::input::InputKind::PointerMotion => {
-                    let m = PointerMotion::ref_from_bytes(
-                        &ev.payload[..std::mem::size_of::<PointerMotion>()],
-                    );
+                    let m =
+                        PointerMotion::ref_from_bytes(&ev.payload[..size_of::<PointerMotion>()]);
                     assert!(m.is_ok());
                 }
                 remoteway_proto::input::InputKind::PointerButton => {
-                    let b = PointerButton::ref_from_bytes(
-                        &ev.payload[..std::mem::size_of::<PointerButton>()],
-                    );
+                    let b =
+                        PointerButton::ref_from_bytes(&ev.payload[..size_of::<PointerButton>()]);
                     assert!(b.is_ok());
                 }
                 remoteway_proto::input::InputKind::PointerAxis => {
-                    let a = PointerAxis::ref_from_bytes(
-                        &ev.payload[..std::mem::size_of::<PointerAxis>()],
-                    );
+                    let a = PointerAxis::ref_from_bytes(&ev.payload[..size_of::<PointerAxis>()]);
                     assert!(a.is_ok());
                 }
                 remoteway_proto::input::InputKind::Key => {
-                    let k =
-                        KeyEvent::ref_from_bytes(&ev.payload[..std::mem::size_of::<KeyEvent>()]);
+                    let k = KeyEvent::ref_from_bytes(&ev.payload[..size_of::<KeyEvent>()]);
                     assert!(k.is_ok());
                 }
             }
@@ -530,8 +521,7 @@ mod tests {
         };
         let ev = InputEvent::pointer_motion(motion);
         let decoded =
-            PointerMotion::ref_from_bytes(&ev.payload[..std::mem::size_of::<PointerMotion>()])
-                .unwrap();
+            PointerMotion::ref_from_bytes(&ev.payload[..size_of::<PointerMotion>()]).unwrap();
         assert_eq!({ decoded.surface_id }, u16::MAX);
         assert_eq!({ decoded.x }, f32::MAX);
         assert_eq!({ decoded.y }, f32::MIN);
@@ -547,8 +537,7 @@ mod tests {
         };
         let ev = InputEvent::pointer_motion(motion);
         let decoded =
-            PointerMotion::ref_from_bytes(&ev.payload[..std::mem::size_of::<PointerMotion>()])
-                .unwrap();
+            PointerMotion::ref_from_bytes(&ev.payload[..size_of::<PointerMotion>()]).unwrap();
         assert_eq!({ decoded.x }, 0.0);
         assert_eq!({ decoded.y }, 0.0);
     }
@@ -563,8 +552,7 @@ mod tests {
             };
             let ev = InputEvent::pointer_button(btn);
             let decoded =
-                PointerButton::ref_from_bytes(&ev.payload[..std::mem::size_of::<PointerButton>()])
-                    .unwrap();
+                PointerButton::ref_from_bytes(&ev.payload[..size_of::<PointerButton>()]).unwrap();
             assert_eq!({ decoded.button }, button_code);
         }
     }

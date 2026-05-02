@@ -52,16 +52,19 @@ impl GpuFrame {
     }
 
     /// Total size in bytes of the pixel data.
+    #[must_use]
     pub fn byte_size(&self) -> usize {
         self.data.len()
     }
 
     /// Number of pixels (width × height).
+    #[must_use]
     pub fn pixel_count(&self) -> u64 {
-        self.width as u64 * self.height as u64
+        u64::from(self.width) * u64::from(self.height)
     }
 
     /// Check if this frame has the same dimensions as another.
+    #[must_use]
     pub fn same_dimensions(&self, other: &GpuFrame) -> bool {
         self.width == other.width && self.height == other.height && self.stride == other.stride
     }
@@ -76,6 +79,12 @@ pub trait FrameInterpolator: Send + Sync {
     /// Interpolate between frames `a` and `b` at temporal position `t`.
     ///
     /// `t` must be in the range `0.0..=1.0`. Returns a new synthesized frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InterpolateError::InvalidFactor`] if `t` is outside `0.0..=1.0`,
+    /// [`InterpolateError::DimensionMismatch`] if frames differ in size, or
+    /// [`InterpolateError::InterpolateFailed`] on GPU/compute errors.
     fn interpolate(&self, a: &GpuFrame, b: &GpuFrame, t: f32)
     -> Result<GpuFrame, InterpolateError>;
 
@@ -113,20 +122,25 @@ impl FrameInterpolator for LinearBlendInterpolator {
         let mut result = Vec::with_capacity(len);
 
         // Quantize blend factor to 0..256 for integer math (no FP on hot path).
+        // SAFETY: t is validated to be in 0.0..=1.0, so t*256.0 is in 0.0..=256.0.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let t_fixed = (t * 256.0) as u16;
         let inv_t = 256 - t_fixed;
 
         for i in 0..len {
-            let va = a.data[i] as u16;
-            let vb = b.data[i] as u16;
+            let va = u16::from(a.data[i]);
+            let vb = u16::from(b.data[i]);
             let blended = (va * inv_t + vb * t_fixed) >> 8;
             result.push(blended as u8);
         }
 
         // Interpolated timestamp: linear between a and b.
+        // NOTE: delta (u64) to f64 conversion loses precision for very large
+        // values (>2^53 ns ~ 104 days), which is irrelevant for frame timing.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
         let ts = if b.timestamp_ns >= a.timestamp_ns {
             let delta = b.timestamp_ns - a.timestamp_ns;
-            a.timestamp_ns + (delta as f64 * t as f64) as u64
+            a.timestamp_ns + (delta as f64 * f64::from(t)) as u64
         } else {
             a.timestamp_ns
         };
@@ -145,7 +159,7 @@ impl FrameInterpolator for LinearBlendInterpolator {
         0.5
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "linear-blend"
     }
 }

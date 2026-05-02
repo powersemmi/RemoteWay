@@ -14,12 +14,16 @@ const FRAME_QUEUE_DEPTH: usize = 2;
 /// A depth of 2 allows one frame in-flight while another is being processed.
 const INCOMING_QUEUE_DEPTH: usize = 2;
 
+/// Errors that can occur at the transport layer.
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
+    /// An underlying I/O error.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    /// A protocol framing/multiplexing error.
     #[error("multiplexer error: {0}")]
     Multiplexer(#[from] MultiplexerError),
+    /// The transport has been disconnected.
     #[error("transport disconnected")]
     Disconnected,
 }
@@ -40,21 +44,25 @@ pub struct TransportSender {
 
 impl TransportSender {
     /// Send an input event. Always succeeds unless the transport is shut down.
+    #[must_use]
     pub fn send_input(&self, data: Vec<u8>) -> bool {
         self.input_tx.send(data).is_ok()
     }
 
     /// Send an anchor frame. Always succeeds unless the transport is shut down.
+    #[must_use]
     pub fn send_anchor(&self, data: Vec<u8>) -> bool {
         self.anchor_tx.send(data).is_ok()
     }
 
     /// Enqueue a regular frame chunk. Returns `false` if the queue is full (caller drops it).
+    #[must_use]
     pub fn try_send_frame(&self, data: Vec<u8>) -> bool {
         self.frame_tx.try_send(data).is_ok()
     }
 
     /// Number of frame slots currently occupied.
+    #[must_use]
     pub fn frame_queue_len(&self) -> usize {
         self.frame_tx.max_capacity() - self.frame_tx.capacity()
     }
@@ -114,6 +122,7 @@ impl SshTransport {
     }
 
     /// A cloneable sender handle for outgoing messages.
+    #[must_use]
     pub fn sender(&self) -> TransportSender {
         self.sender.clone()
     }
@@ -124,6 +133,7 @@ impl SshTransport {
     }
 
     /// Watch channel that becomes `true` when the connection is lost.
+    #[must_use]
     pub fn disconnect_watch(&self) -> watch::Receiver<bool> {
         self.disconnect_rx.clone()
     }
@@ -152,6 +162,7 @@ async fn read_loop<R: AsyncRead + Unpin>(
             Err(_) => break,
         }
     }
+    // INTENTIONAL: best-effort disconnect signal, receiver may already be dropped
     let _ = disconnect_tx.send(true);
 }
 
@@ -180,6 +191,7 @@ async fn write_loop<W: AsyncWrite + Unpin>(
             break;
         }
     }
+    // INTENTIONAL: best-effort disconnect signal, receiver may already be dropped
     let _ = disconnect_tx.send(true);
 }
 
@@ -258,11 +270,9 @@ mod tests {
         let mut watch = transport.disconnect_watch();
 
         // Wait until disconnected.
-        watch
-            .wait_for(|&v| v)
-            .await
-            .expect("watch closed unexpectedly");
-        assert!(*watch.borrow());
+        watch.wait_for(|&v| v).await.unwrap();
+        let disconnected = *watch.borrow_and_update();
+        assert!(disconnected);
     }
 
     #[tokio::test]

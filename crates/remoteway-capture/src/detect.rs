@@ -86,7 +86,7 @@ pub fn detect_backend(output_name: Option<&str>) -> Result<Box<dyn CaptureBacken
     Err(CaptureError::NoBackend)
 }
 
-/// Create a portal-based PipeWire capture backend with the given source type.
+/// Create a portal-based `PipeWire` capture backend with the given source type.
 ///
 /// On GNOME/KDE this is the primary capture path. On other compositors (niri, etc.)
 /// it serves as a fallback when ext-image-capture is unavailable.
@@ -140,6 +140,7 @@ pub fn detect_new_toplevel_backend(
 }
 
 /// Check if any capture backend is available without creating one.
+#[must_use]
 pub fn is_capture_available() -> bool {
     let Ok(conn) = Connection::connect_to_env() else {
         return false;

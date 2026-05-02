@@ -57,8 +57,8 @@ proptest! {
         payload_len in 0u32..=1024u32,
     ) {
         let hdr = FrameHeader::new(stream_id, MsgType::FrameUpdate, flags::LAST_CHUNK, payload_len, 0);
-        let _ = hdr.as_bytes();
-        let _ = hdr.msg_type();
+        hdr.as_bytes();
+        hdr.msg_type();
     }
 
     /// Random payload_len values produce consistent byte representations.
@@ -131,6 +131,6 @@ proptest! {
     fn unknown_input_kind_no_panic(raw in 4u8..=255u8) {
         let mut ev = InputEvent::key(KeyEvent { key: 0, state: 0 });
         ev.kind = raw;
-        let _ = ev.kind(); // must not panic
+        ev.kind(); // must not panic
     }
 }

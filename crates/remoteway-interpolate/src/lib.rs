@@ -1,3 +1,7 @@
+//! Frame interpolation for `RemoteWay`. Pluggable backends (linear blend, FSR2, FSR3,
+//! NVIDIA Optical Flow, RIFE, WGPU optical flow) for generating intermediate frames
+//! between received frames.
+
 pub mod backend;
 pub mod backends;
 pub mod error;

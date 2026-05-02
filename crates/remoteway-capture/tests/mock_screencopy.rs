@@ -1,5 +1,5 @@
 //! Integration test using an in-process wayland-server mock that implements
-//! wl_shm and wlr-screencopy-unstable-v1 for full protocol round-trip testing.
+//! `wl_shm` and wlr-screencopy-unstable-v1 for full protocol round-trip testing.
 //!
 //! Tests exercise real library types (`ShmBufferPool`, `OutputEnumerator`,
 //! `PixelFormat`, capture dispatch flows) against a mock compositor.
@@ -28,7 +28,7 @@ struct MockCompositor {
     frame_width: u32,
     frame_height: u32,
     frame_stride: u32,
-    /// Pixel format to advertise (server-side wl_shm::Format).
+    /// Pixel format to advertise (server-side `wl_shm::Format`).
     shm_format: wl_shm::Format,
     /// Whether the capture should fail.
     should_fail: bool,
@@ -402,7 +402,7 @@ fn spawn_capture_server(compositor: MockCompositor) -> (wayland_client::Connecti
     )
 }
 
-/// Spawn a mock server with xdg_output_manager for OutputEnumerator tests.
+/// Spawn a mock server with `xdg_output_manager` for `OutputEnumerator` tests.
 fn spawn_output_server(compositor: MockCompositor) -> (wayland_client::Connection, MockServer) {
     let display = wayland_server::Display::<MockCompositor>::new().unwrap();
     let mut dh = display.handle();
@@ -446,7 +446,7 @@ fn spawn_output_server(compositor: MockCompositor) -> (wayland_client::Connectio
 // and call the dispatch implementations through the Wayland client protocol.
 // ==========================================================================
 
-/// Client-side state that mirrors ScreencopyState for testing the protocol flow.
+/// Client-side state that mirrors `ScreencopyState` for testing the protocol flow.
 struct ScreencopyTestClient {
     shm: Option<wayland_client::protocol::wl_shm::WlShm>,
     output: Option<wayland_client::protocol::wl_output::WlOutput>,
@@ -534,7 +534,7 @@ impl ClientDispatch<wayland_client::protocol::wl_registry::WlRegistry, ()>
                     }
                 }
                 "zwlr_screencopy_manager_v1" => {
-                    state.manager = Some(registry.bind(name, version.min(3), qh, ()))
+                    state.manager = Some(registry.bind(name, version.min(3), qh, ()));
                 }
                 _ => {}
             }
@@ -716,7 +716,7 @@ fn screencopy_protocol_round_trip() {
     server.shutdown();
 }
 
-/// Test the full capture flow: CaptureOutput → Buffer → BufferDone → (create pool) → Copy → Damage → Ready.
+/// Test the full capture flow: `CaptureOutput` → Buffer → `BufferDone` → (create pool) → Copy → Damage → Ready.
 #[test]
 fn screencopy_full_capture_flow() {
     let compositor = MockCompositor::new(64, 48);
@@ -839,7 +839,7 @@ fn screencopy_xbgr8888_format() {
     server.shutdown();
 }
 
-/// Test capture failure: compositor sends Failed event on CaptureOutput.
+/// Test capture failure: compositor sends Failed event on `CaptureOutput`.
 #[test]
 fn screencopy_capture_failure_on_capture_output() {
     let compositor = MockCompositor::new(64, 48).with_failure();
@@ -998,6 +998,7 @@ fn screencopy_multiple_captures_with_swap() {
 
     // Read data from the captured buffer.
     let buf_size = pool.buffer_size();
+    // SAFETY: test mock helper.
     let data = unsafe { pool.active_data() };
     assert_eq!(data.len(), buf_size);
 
@@ -1042,7 +1043,7 @@ fn screencopy_multiple_captures_with_swap() {
     server.shutdown();
 }
 
-/// Test ShmBufferPool creation with various dimensions.
+/// Test `ShmBufferPool` creation with various dimensions.
 #[test]
 fn shm_buffer_pool_various_dimensions() {
     let compositor = MockCompositor::new(64, 48);
@@ -1081,7 +1082,7 @@ fn shm_buffer_pool_various_dimensions() {
     server.shutdown();
 }
 
-/// Test ShmBufferPool error paths.
+/// Test `ShmBufferPool` error paths.
 #[test]
 fn shm_buffer_pool_error_paths() {
     let compositor = MockCompositor::new(64, 48);
@@ -1112,7 +1113,7 @@ fn shm_buffer_pool_error_paths() {
     server.shutdown();
 }
 
-/// Test ShmBufferPool swap and active_data cycle.
+/// Test `ShmBufferPool` swap and `active_data` cycle.
 #[test]
 fn shm_buffer_pool_swap_and_active_data() {
     let compositor = MockCompositor::new(64, 48);
@@ -1132,25 +1133,28 @@ fn shm_buffer_pool_swap_and_active_data() {
     assert_eq!(pool.buffer_size(), 128); // 32 * 4
 
     // Both buffers should initially be zero-filled (memfd).
+    // SAFETY: test mock helper.
     let data0 = unsafe { pool.active_data() };
     assert_eq!(data0.len(), 128);
     assert!(data0.iter().all(|&b| b == 0));
 
     // Swap to buffer 1.
     pool.swap();
+    // SAFETY: test mock helper.
     let data1 = unsafe { pool.active_data() };
     assert_eq!(data1.len(), 128);
     assert!(data1.iter().all(|&b| b == 0));
 
     // Swap back to buffer 0.
     pool.swap();
+    // SAFETY: test mock helper.
     let data0_again = unsafe { pool.active_data() };
     assert_eq!(data0_again.len(), 128);
 
     server.shutdown();
 }
 
-/// Test ShmBufferPool buffer_size correctness across formats.
+/// Test `ShmBufferPool` `buffer_size` correctness across formats.
 #[test]
 fn shm_buffer_pool_buffer_size_correctness() {
     let compositor = MockCompositor::new(64, 48);
@@ -1193,7 +1197,7 @@ fn shm_buffer_pool_buffer_size_correctness() {
     server.shutdown();
 }
 
-/// Test OutputEnumerator with a single output.
+/// Test `OutputEnumerator` with a single output.
 #[test]
 fn output_enumerator_single_output() {
     let compositor = MockCompositor::new(1920, 1080);
@@ -1217,7 +1221,7 @@ fn output_enumerator_single_output() {
     server.shutdown();
 }
 
-/// Test OutputEnumerator with multiple outputs.
+/// Test `OutputEnumerator` with multiple outputs.
 #[test]
 fn output_enumerator_multiple_outputs() {
     let compositor =
@@ -1238,7 +1242,7 @@ fn output_enumerator_multiple_outputs() {
     server.shutdown();
 }
 
-/// Test that OutputInfo fields are correctly populated by mock output events.
+/// Test that `OutputInfo` fields are correctly populated by mock output events.
 #[test]
 fn output_info_fields_populated() {
     let compositor = MockCompositor::new(2560, 1440);
@@ -1260,7 +1264,7 @@ fn output_info_fields_populated() {
     server.shutdown();
 }
 
-/// Test PixelFormat conversion for all supported formats.
+/// Test `PixelFormat` conversion for all supported formats.
 #[test]
 fn pixel_format_from_wl_shm_all_formats() {
     assert_eq!(PixelFormat::from_wl_shm(0), Some(PixelFormat::Argb8888));
@@ -1278,7 +1282,7 @@ fn pixel_format_from_wl_shm_all_formats() {
     assert_eq!(PixelFormat::from_wl_shm(u32::MAX), None);
 }
 
-/// Test PixelFormat bytes_per_pixel.
+/// Test `PixelFormat` `bytes_per_pixel`.
 #[test]
 fn pixel_format_bpp() {
     for pf in [
@@ -1291,7 +1295,7 @@ fn pixel_format_bpp() {
     }
 }
 
-/// Test that output_name is correctly propagated from the mock output.
+/// Test that `output_name` is correctly propagated from the mock output.
 #[test]
 fn screencopy_output_name_propagation() {
     let compositor = MockCompositor::new(64, 48).with_outputs(vec!["DP-3".to_string()]);
@@ -1310,7 +1314,7 @@ fn screencopy_output_name_propagation() {
     server.shutdown();
 }
 
-/// Test ShmBufferPool with Argb8888 format.
+/// Test `ShmBufferPool` with Argb8888 format.
 #[test]
 fn shm_buffer_pool_argb_format() {
     let compositor = MockCompositor::new(64, 48);
@@ -1397,7 +1401,7 @@ fn screencopy_two_phase_dispatch() {
     server.shutdown();
 }
 
-/// Test ShmBufferPool active_buffer returns correct buffers after swaps.
+/// Test `ShmBufferPool` `active_buffer` returns correct buffers after swaps.
 #[test]
 fn shm_buffer_pool_active_buffer_consistency() {
     let compositor = MockCompositor::new(64, 48);
@@ -1440,7 +1444,7 @@ fn shm_buffer_pool_active_buffer_consistency() {
     server.shutdown();
 }
 
-/// Test that ShmBufferPool correctly stores the format.
+/// Test that `ShmBufferPool` correctly stores the format.
 #[test]
 fn shm_buffer_pool_format_stored() {
     let compositor = MockCompositor::new(64, 48);
@@ -1497,7 +1501,7 @@ use std::sync::Mutex;
 
 use remoteway_capture::backend::CaptureBackend;
 
-/// Mutex to serialize tests that modify the WAYLAND_DISPLAY env var.
+/// Mutex to serialize tests that modify the `WAYLAND_DISPLAY` env var.
 static SCREENCOPY_WAYLAND_DISPLAY_LOCK: Mutex<()> = Mutex::new(());
 
 struct ScreencopyListeningMock {
@@ -1536,6 +1540,7 @@ impl ScreencopyListeningMock {
         let listener = ListeningSocket::bind(&socket_name).unwrap();
 
         let old_display = std::env::var("WAYLAND_DISPLAY").ok();
+        // SAFETY: test mock helper.
         unsafe { std::env::set_var("WAYLAND_DISPLAY", &socket_name) };
 
         let stop = Arc::new(AtomicBool::new(false));
@@ -1547,10 +1552,10 @@ impl ScreencopyListeningMock {
             let mut dh = display.handle();
             while !stop_server.load(Ordering::Relaxed) {
                 if let Ok(Some(stream)) = listener.accept() {
-                    let _ = dh.insert_client(stream, Arc::new(()));
+                    dh.insert_client(stream, Arc::new(()));
                 }
-                let _ = display.dispatch_clients(&mut compositor);
-                let _ = display.flush_clients();
+                display.dispatch_clients(&mut compositor);
+                display.flush_clients().ok();
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         });
@@ -1570,10 +1575,12 @@ impl Drop for ScreencopyListeningMock {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(h) = self.server_thread.take() {
-            let _ = h.join();
+            h.join().ok();
         }
         match self.old_display.take() {
+            // SAFETY: test mock helper.
             Some(val) => unsafe { std::env::set_var("WAYLAND_DISPLAY", val) },
+            // SAFETY: test mock helper.
             None => unsafe { std::env::remove_var("WAYLAND_DISPLAY") },
         }
     }

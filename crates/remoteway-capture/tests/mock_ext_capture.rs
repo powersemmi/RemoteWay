@@ -1,8 +1,8 @@
 //! Integration test using an in-process wayland-server mock that implements
 //! ext-image-capture-source-v1, ext-image-copy-capture-v1, ext-foreign-toplevel-list-v1,
-//! wl_shm, and wl_output for full protocol round-trip testing of `ExtImageCaptureBackend`.
+//! `wl_shm`, and `wl_output` for full protocol round-trip testing of `ExtImageCaptureBackend`.
 //!
-//! This test exercises all Dispatch implementations in ext_capture.rs by creating a mock
+//! This test exercises all Dispatch implementations in `ext_capture.rs` by creating a mock
 //! compositor server that sends the appropriate protocol events in response to client requests.
 
 use std::os::unix::net::UnixStream;
@@ -386,9 +386,7 @@ impl Dispatch<srv_session::ExtImageCopyCaptureSessionV1, ()> for MockExtComposit
             // capture and then blocking_dispatch to receive events.
             // We defer actual events to the frame's capture request handler.
             //
-            // Store frame info in state so we can respond to capture.
-            // For simplicity, we just stash the frame ref via the data_init above.
-            let _ = (state, frame);
+            // For simplicity, creation via data_init above is sufficient.
         }
     }
 }
@@ -550,7 +548,7 @@ impl Drop for MockServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.thread.take() {
-            let _ = t.join();
+            t.join().ok();
         }
     }
 }
@@ -585,9 +583,9 @@ use remoteway_capture::ext_capture::{
 // Tests using WAYLAND_DISPLAY and real ExtImageCaptureBackend
 // ---------------------------------------------------------------------------
 
-/// Start a mock compositor that listens on a unique socket, set WAYLAND_DISPLAY,
-/// and run the given closure. Restores WAYLAND_DISPLAY on completion.
-/// Mutex to serialize tests that modify the WAYLAND_DISPLAY env var.
+/// Start a mock compositor that listens on a unique socket, set `WAYLAND_DISPLAY`,
+/// and run the given closure. Restores `WAYLAND_DISPLAY` on completion.
+/// Mutex to serialize tests that modify the `WAYLAND_DISPLAY` env var.
 static WAYLAND_DISPLAY_LOCK: Mutex<()> = Mutex::new(());
 
 fn with_mock_wayland<F>(compositor: MockExtCompositor, f: F)
@@ -622,6 +620,7 @@ where
 
     // Save and set WAYLAND_DISPLAY.
     let old_display = std::env::var("WAYLAND_DISPLAY").ok();
+    // SAFETY: test mock helper.
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &socket_name) };
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -650,11 +649,13 @@ where
 
     // Cleanup.
     stop.store(true, Ordering::Relaxed);
-    let _ = server_thread.join();
+    server_thread.join().ok();
 
     // Restore WAYLAND_DISPLAY.
     match old_display {
+        // SAFETY: test mock helper.
         Some(val) => unsafe { std::env::set_var("WAYLAND_DISPLAY", val) },
+        // SAFETY: test mock helper.
         None => unsafe { std::env::remove_var("WAYLAND_DISPLAY") },
     }
 
@@ -1082,7 +1083,7 @@ fn ext_backend_stop() {
     with_mock_wayland(compositor, || {
         let mut backend = ExtImageCaptureBackend::new(CaptureSource::Output(None)).unwrap();
         // Capture one frame successfully.
-        let _ = backend.next_frame().unwrap();
+        backend.next_frame().unwrap();
         // Stop the backend.
         backend.stop();
         // Next frame should return SessionEnded.

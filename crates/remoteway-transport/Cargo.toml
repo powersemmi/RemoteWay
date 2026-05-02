@@ -4,20 +4,28 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "SSH multiplexed protocol over stdin/stdout"
 
 [dependencies]
 remoteway-core = { path = "../remoteway-core" }
 remoteway-proto = { path = "../remoteway-proto" }
-tokio = { version = "1", features = ["full"] }
-thiserror = "2"
-tracing = "0.1"
-zerocopy = { version = "0.8", features = ["derive"] }
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zerocopy.workspace = true
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-proptest = "1"
+criterion.workspace = true
+proptest.workspace = true
 
 [[bench]]
 name = "bench_transport"
 harness = false
+
+[lints]
+workspace = true

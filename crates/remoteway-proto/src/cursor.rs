@@ -4,32 +4,44 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 pub struct CursorMove {
+    /// Target surface ID.
     pub surface_id: u16,
+    /// Alignment padding; always zero.
     pub _pad: u16,
+    /// X position in surface-local coordinates.
     pub x: f32,
+    /// Y position in surface-local coordinates.
     pub y: f32,
 }
 
-const _: () = assert!(std::mem::size_of::<CursorMove>() == 12);
+const _: () = assert!(size_of::<CursorMove>() == 12);
 
 /// Full cursor update: position + hotspot + optional RGBA bitmap dimensions.
 /// The bitmap pixel data follows this header in the payload when `has_bitmap != 0`.
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 pub struct CursorUpdate {
+    /// Target surface ID.
     pub surface_id: u16,
+    /// Hotspot X offset within the cursor image.
     pub hotspot_x: i16,
+    /// Hotspot Y offset within the cursor image.
     pub hotspot_y: i16,
     /// 1 if RGBA bitmap data follows in the payload.
     pub has_bitmap: u8,
+    /// Alignment padding; always zero.
     pub _pad: u8,
+    /// Width of the cursor bitmap in pixels.
     pub bitmap_width: u16,
+    /// Height of the cursor bitmap in pixels.
     pub bitmap_height: u16,
+    /// X position in surface-local coordinates.
     pub x: f32,
+    /// Y position in surface-local coordinates.
     pub y: f32,
 }
 
-const _: () = assert!(std::mem::size_of::<CursorUpdate>() == 20);
+const _: () = assert!(size_of::<CursorUpdate>() == 20);
 
 #[cfg(test)]
 mod tests {
@@ -39,12 +51,12 @@ mod tests {
 
     #[test]
     fn cursor_move_size() {
-        assert_eq!(std::mem::size_of::<CursorMove>(), 12);
+        assert_eq!(size_of::<CursorMove>(), 12);
     }
 
     #[test]
     fn cursor_update_size() {
-        assert_eq!(std::mem::size_of::<CursorUpdate>(), 20);
+        assert_eq!(size_of::<CursorUpdate>(), 20);
     }
 
     #[test]

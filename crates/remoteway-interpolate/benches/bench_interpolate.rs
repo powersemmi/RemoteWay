@@ -88,7 +88,6 @@ fn bench_wgpu_optical_flow(c: &mut Criterion) {
     }
     #[cfg(not(feature = "wgpu-backend"))]
     {
-        let _ = c;
     }
 }
 
@@ -125,7 +124,6 @@ fn bench_fsr2(c: &mut Criterion) {
     }
     #[cfg(not(feature = "fsr2"))]
     {
-        let _ = c;
     }
 }
 
@@ -162,7 +160,6 @@ fn bench_fsr3(c: &mut Criterion) {
     }
     #[cfg(not(feature = "fsr3"))]
     {
-        let _ = c;
     }
 }
 
@@ -199,7 +196,6 @@ fn bench_nvidia_of(c: &mut Criterion) {
     }
     #[cfg(not(feature = "nvidia-of"))]
     {
-        let _ = c;
     }
 }
 

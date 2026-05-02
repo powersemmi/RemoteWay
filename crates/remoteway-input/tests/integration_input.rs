@@ -1,7 +1,7 @@
 //! Integration tests for remoteway-input crate.
 //!
 //! Tests that don't require a real Wayland compositor.
-//! Mock compositor tests are in mock_virtual_input.rs.
+//! Mock compositor tests are in `mock_virtual_input.rs`.
 
 use remoteway_proto::input::{
     InputEvent, InputKind, KeyEvent, PointerAxis, PointerButton, PointerMotion,
@@ -109,7 +109,7 @@ fn all_event_kinds_round_trip() {
     ];
     for (ev, expected_kind) in &events {
         assert_eq!(ev.kind().unwrap(), *expected_kind);
-        assert_eq!(std::mem::size_of_val(ev), 16);
+        assert_eq!(size_of_val(ev), 16);
     }
 }
 
@@ -192,7 +192,7 @@ fn error_inject_failed_variant() {
 
 #[test]
 fn input_event_is_exactly_16_bytes() {
-    assert_eq!(std::mem::size_of::<InputEvent>(), 16);
+    assert_eq!(size_of::<InputEvent>(), 16);
 }
 
 #[test]
@@ -215,8 +215,7 @@ fn pointer_motion_all_fields_round_trip() {
         y: 999.999,
     };
     let ev = InputEvent::pointer_motion(motion);
-    let decoded =
-        PointerMotion::ref_from_bytes(&ev.payload[..std::mem::size_of::<PointerMotion>()]).unwrap();
+    let decoded = PointerMotion::ref_from_bytes(&ev.payload[..size_of::<PointerMotion>()]).unwrap();
     assert_eq!({ decoded.surface_id }, 12345);
     assert_eq!({ decoded.x }, -1.5);
     assert!(({ decoded.y } - 999.999).abs() < 0.01);

@@ -5,19 +5,25 @@ use crate::error::CaptureError;
 /// Pixel format of captured frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
+    /// 32-bit ARGB (alpha, red, green, blue) — little-endian.
     Argb8888,
+    /// 32-bit XRGB (unused alpha, red, green, blue) — little-endian.
     Xrgb8888,
+    /// 32-bit ABGR (alpha, blue, green, red) — little-endian.
     Abgr8888,
+    /// 32-bit XBGR (unused alpha, blue, green, red) — little-endian.
     Xbgr8888,
 }
 
 impl PixelFormat {
     /// Bytes per pixel — always 4 for supported formats.
+    #[must_use]
     pub const fn bytes_per_pixel(&self) -> usize {
         4
     }
 
-    /// Convert from wl_shm format code (DRM fourcc values).
+    /// Convert from `wl_shm` format code (DRM fourcc values).
+    #[must_use]
     pub fn from_wl_shm(format: u32) -> Option<Self> {
         match format {
             0 => Some(Self::Argb8888),
@@ -33,14 +39,15 @@ impl PixelFormat {
 #[derive(Debug)]
 #[must_use]
 pub struct CapturedFrame {
-    /// Raw pixel data (owned, copied from SHM buffer).
+    /// Raw pixel data (owned, copied from the SHM buffer).
     pub data: Vec<u8>,
     /// Regions that changed since the previous frame.
     pub damage: Vec<DamageRect>,
     /// Pixel format.
     pub format: PixelFormat,
-    /// Frame dimensions.
+    /// Frame width in pixels.
     pub width: u32,
+    /// Frame height in pixels.
     pub height: u32,
     /// Bytes per row (may be > width * 4 due to padding).
     pub stride: u32,

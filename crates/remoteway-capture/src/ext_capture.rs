@@ -40,17 +40,23 @@ impl std::fmt::Debug for ExtImageCaptureBackend {
 pub enum CaptureSource {
     /// Capture an output by name. `None` = first available.
     Output(Option<String>),
-    /// Capture a toplevel by app_id.
+    /// Capture a toplevel by `app_id`.
     Toplevel(String),
     /// Capture the first toplevel whose identifier is NOT in the known set.
+    ///
     /// Used for auto-detecting a newly spawned child's window.
-    NewToplevel { known_identifiers: Vec<String> },
+    NewToplevel {
+        /// Set of identifiers already known (to exclude from matching).
+        known_identifiers: Vec<String>,
+    },
 }
 
 /// Public information about a discovered toplevel window.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ToplevelInfo {
+    /// Application identifier (e.g., "org.mozilla.firefox").
     pub app_id: String,
+    /// Window title.
     pub title: String,
     /// Compositor-specific unique identifier (stable for the toplevel's lifetime).
     pub identifier: String,
@@ -58,9 +64,9 @@ pub struct ToplevelInfo {
 
 struct DiscoveredOutput {
     wl_output: wl_output::WlOutput,
-    /// Compositor name (e.g. "HDMI-A-1"), filled from wl_output.name event.
+    /// Compositor name (e.g. "HDMI-A-1"), filled from `wl_output.name` event.
     name: String,
-    /// Wayland global name for matching wl_output events to this entry.
+    /// Wayland global name for matching `wl_output` events to this entry.
     global_name: u32,
 }
 
@@ -134,8 +140,11 @@ impl ExtImageCaptureBackend {
             stopped: false,
         };
 
-        display.get_registry(&qh, ());
-        event_queue.roundtrip(&mut state)?;
+        // The WlRegistry object does not need to be stored — all global
+        // advertisements arrive as events dispatched through the queue.
+        let _registry = display.get_registry(&qh, ());
+        let dispatched = event_queue.roundtrip(&mut state)?;
+        tracing::trace!(dispatched, "first roundtrip completed");
 
         // Verify required globals.
         if state.copy_capture_manager.is_none() {
@@ -153,7 +162,8 @@ impl ExtImageCaptureBackend {
         }
 
         // Second round-trip: get output names and toplevel info.
-        event_queue.roundtrip(&mut state)?;
+        let dispatched = event_queue.roundtrip(&mut state)?;
+        tracing::trace!(dispatched, "second roundtrip completed");
 
         // Create capture source based on requested type.
         match source {
@@ -261,8 +271,16 @@ impl ExtImageCaptureBackend {
         }
 
         // Create capture session.
-        let capture_manager = state.copy_capture_manager.as_ref().unwrap();
-        let source = state.source.as_ref().unwrap();
+        let capture_manager =
+            state
+                .copy_capture_manager
+                .as_ref()
+                .ok_or(CaptureError::CaptureFailed(
+                    "BUG: copy_capture_manager not initialized".into(),
+                ))?;
+        let source = state.source.as_ref().ok_or(CaptureError::CaptureFailed(
+            "BUG: source not initialized".into(),
+        ))?;
         let session = capture_manager.create_session(
             source,
             ext_image_copy_capture_manager_v1::Options::empty(),
@@ -272,7 +290,8 @@ impl ExtImageCaptureBackend {
         state.session = Some(session);
 
         // Round-trip to get session parameters (buffer_size, shm_format, done).
-        event_queue.roundtrip(&mut state)?;
+        let dispatched = event_queue.roundtrip(&mut state)?;
+        tracing::trace!(dispatched, "session setup roundtrip completed");
 
         if !state.session_ready {
             return Err(CaptureError::CaptureFailed(
@@ -286,7 +305,8 @@ impl ExtImageCaptureBackend {
         ))?;
         let stride = state.buffer_width * 4;
         let pool = ShmBufferPool::new(
-            state.shm.as_ref().unwrap(),
+            #[allow(clippy::expect_used)]
+            state.shm.as_ref().expect("BUG: shm not initialized"),
             state.buffer_width,
             state.buffer_height,
             stride,
@@ -303,12 +323,19 @@ impl ExtImageCaptureBackend {
     }
 
     /// Check if ext-image-capture is available on the given connection.
+    #[must_use]
     pub fn is_available(conn: &Connection) -> bool {
         let mut eq = conn.new_event_queue::<ExtCaptureProbe>();
         let qh = eq.handle();
         let mut probe = ExtCaptureProbe { found: false };
-        conn.display().get_registry(&qh, ());
-        let _ = eq.roundtrip(&mut probe);
+        // The WlRegistry object is not needed — globals arrive as events
+        // dispatched through the queue.
+        let _registry = conn.display().get_registry(&qh, ());
+        // If the roundtrip fails (e.g. compositor disconnected), there is
+        // nothing to probe and the backend is not available.
+        if eq.roundtrip(&mut probe).is_err() {
+            return false;
+        }
         probe.found
     }
 }
@@ -351,7 +378,8 @@ impl CaptureBackend for ExtImageCaptureBackend {
 
         // Dispatch until ready or failed.
         while !self.state.frame_ready && !self.state.frame_failed {
-            self.event_queue.blocking_dispatch(&mut self.state)?;
+            let dispatched = self.event_queue.blocking_dispatch(&mut self.state)?;
+            tracing::trace!(dispatched, "blocking_dispatch processed events");
         }
 
         // Destroy the frame object — otherwise the compositor rejects
@@ -380,7 +408,15 @@ impl CaptureBackend for ExtImageCaptureBackend {
             .ok_or(CaptureError::UnsupportedFormat(format_raw))?;
 
         // SAFETY: frame_ready == true means the compositor has finished writing.
-        let data = unsafe { self.state.shm_pool.as_ref().unwrap().active_data().to_vec() };
+        #[allow(clippy::expect_used)]
+        let data = unsafe {
+            self.state
+                .shm_pool
+                .as_ref()
+                .expect("BUG: shm_pool not initialized")
+                .active_data()
+                .to_vec()
+        };
 
         // Swap double buffer.
         if let Some(ref mut pool) = self.state.shm_pool {
@@ -735,8 +771,11 @@ pub fn enumerate_toplevels() -> Result<Vec<ToplevelInfo>, CaptureError> {
         stopped: false,
     };
 
-    conn.display().get_registry(&qh, ());
-    event_queue.roundtrip(&mut state)?;
+    // The WlRegistry object is not stored — globals arrive as events
+    // dispatched through the queue.
+    let _registry = conn.display().get_registry(&qh, ());
+    let dispatched = event_queue.roundtrip(&mut state)?;
+    tracing::trace!(dispatched, "toplevel enumerate: first roundtrip");
 
     // Only the toplevel list protocol is needed for enumeration.
     // Capture protocols (source manager, copy capture) are checked later
@@ -746,7 +785,8 @@ pub fn enumerate_toplevels() -> Result<Vec<ToplevelInfo>, CaptureError> {
     }
 
     // Second round-trip to receive toplevel info (app_id, title, identifier).
-    event_queue.roundtrip(&mut state)?;
+    let dispatched = event_queue.roundtrip(&mut state)?;
+    tracing::trace!(dispatched, "toplevel enumerate: second roundtrip");
 
     Ok(state
         .toplevels

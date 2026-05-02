@@ -20,8 +20,8 @@ impl Fsr3Interpolator {
     ///
     /// Checks for RDNA3+ hardware before initialization. Falls back to
     /// the same Vulkan compute path as FSR2 with tuned parameters:
-    /// - block_size=16 (larger blocks for better quality)
-    /// - search_radius=16 (wider search for fast motion)
+    /// - `block_size=16` (larger blocks for better quality)
+    /// - `search_radius=16` (wider search for fast motion)
     pub fn new() -> Result<Self, InterpolateError> {
         // Gate: RDNA3+ hardware required.
         if !VulkanContext::probe_rdna3_plus() {

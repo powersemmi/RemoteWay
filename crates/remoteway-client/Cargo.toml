@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Client binary: transport → display → interpolate + input send"
 
 [[bin]]
@@ -18,15 +23,18 @@ remoteway-transport = { path = "../remoteway-transport" }
 remoteway-display = { path = "../remoteway-display" }
 remoteway-interpolate = { path = "../remoteway-interpolate" }
 remoteway-input = { path = "../remoteway-input" }
-mimalloc = "0.1"
-libc = "0.2"
-anyhow = "1"
-clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-zerocopy = "0.8"
+mimalloc.workspace = true
+libc.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zerocopy.workspace = true
 tracy-client = { workspace = true, optional = true }
 
 [features]
 tracy = ["dep:tracy-client"]
+
+[lints]
+workspace = true

@@ -1,5 +1,5 @@
 //! Integration test using an in-process wayland-server mock that implements
-//! wl_seat, zwlr_virtual_pointer_manager_v1, and zwp_virtual_keyboard_manager_v1
+//! `wl_seat`, `zwlr_virtual_pointer_manager_v1`, and `zwp_virtual_keyboard_manager_v1`
 //! for full virtual input protocol round-trip testing.
 
 use std::os::unix::net::UnixStream;
@@ -18,7 +18,7 @@ use wayland_server::{Client, Dispatch, DisplayHandle, GlobalDispatch, New};
 // --- Mock compositor state ---
 
 struct MockInputCompositor {
-    /// Counter for virtual pointer motion_absolute requests received.
+    /// Counter for virtual pointer `motion_absolute` requests received.
     motion_count: Arc<AtomicU32>,
     /// Counter for virtual pointer button requests received.
     button_count: Arc<AtomicU32>,
@@ -267,7 +267,7 @@ impl MockSetup {
     fn shutdown(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(h) = self.server_thread.take() {
-            let _ = h.join();
+            h.join().ok();
         }
     }
 }
@@ -467,7 +467,7 @@ fn mock_compositor_accepts_virtual_pointer_and_keyboard() {
     vk.key(103, 30, 1);
 
     // Flush and wait for server to process.
-    let _ = mock.client_conn.flush();
+    mock.client_conn.flush().ok();
     eq.roundtrip(&mut cs).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(30));
 
@@ -595,7 +595,7 @@ fn mock_multiple_motion_events() {
         vp.frame();
     }
 
-    let _ = mock.client_conn.flush();
+    mock.client_conn.flush().ok();
     eq.roundtrip(&mut cs).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(30));
 
@@ -711,7 +711,7 @@ fn mock_multiple_button_events() {
         vp.frame();
     }
 
-    let _ = mock.client_conn.flush();
+    mock.client_conn.flush().ok();
     eq.roundtrip(&mut cs).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(30));
 
@@ -833,7 +833,7 @@ fn mock_multiple_axis_events() {
         vp.frame();
     }
 
-    let _ = mock.client_conn.flush();
+    mock.client_conn.flush().ok();
     eq.roundtrip(&mut cs).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(30));
 
@@ -958,7 +958,7 @@ fn mock_multiple_key_events() {
         vk.key(101, key_code, 0); // release
     }
 
-    let _ = mock.client_conn.flush();
+    mock.client_conn.flush().ok();
     eq.roundtrip(&mut cs).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(30));
 
@@ -1142,7 +1142,7 @@ fn mock_mixed_input_sequence() {
         vk.key(11, key_code, 0); // release
     }
 
-    let _ = mock.client_conn.flush();
+    mock.client_conn.flush().ok();
     eq.roundtrip(&mut cs).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(30));
 
@@ -1180,7 +1180,7 @@ fn mock_compositor_drop_is_clean() {
 
 use std::sync::Mutex;
 
-/// Mutex to serialize tests that modify the WAYLAND_DISPLAY env var.
+/// Mutex to serialize tests that modify the `WAYLAND_DISPLAY` env var.
 static WAYLAND_DISPLAY_LOCK: Mutex<()> = Mutex::new(());
 
 struct ListeningMock {
@@ -1219,6 +1219,7 @@ impl ListeningMock {
         let listener = ListeningSocket::bind(&socket_name).unwrap();
 
         let old_display = std::env::var("WAYLAND_DISPLAY").ok();
+        // SAFETY: test mock helper.
         unsafe { std::env::set_var("WAYLAND_DISPLAY", &socket_name) };
 
         let (mut compositor, (motion, button, axis, key, keymap)) = MockInputCompositor::new();
@@ -1230,10 +1231,10 @@ impl ListeningMock {
             let mut dh = display.handle();
             while !stop_server.load(Ordering::Relaxed) {
                 if let Ok(Some(stream)) = listener.accept() {
-                    let _ = dh.insert_client(stream, Arc::new(()));
+                    dh.insert_client(stream, Arc::new(())).ok();
                 }
-                let _ = display.dispatch_clients(&mut compositor);
-                let _ = display.flush_clients();
+                display.dispatch_clients(&mut compositor).ok();
+                display.flush_clients().ok();
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         });
@@ -1258,10 +1259,12 @@ impl Drop for ListeningMock {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(h) = self.server_thread.take() {
-            let _ = h.join();
+            h.join().ok();
         }
         match self.old_display.take() {
+            // SAFETY: test mock helper.
             Some(val) => unsafe { std::env::set_var("WAYLAND_DISPLAY", val) },
+            // SAFETY: test mock helper.
             None => unsafe { std::env::remove_var("WAYLAND_DISPLAY") },
         }
     }

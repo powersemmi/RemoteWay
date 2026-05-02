@@ -9,11 +9,11 @@ fuzz_target!(|data: &[u8]| {
     let mut parser = StreamParser::new();
 
     // Feed all at once.
-    let _ = parser.push(data);
+    parser.push(data);
 
     // Feed byte-by-byte (different state machine paths).
     let mut parser2 = StreamParser::new();
     for byte in data {
-        let _ = parser2.push(std::slice::from_ref(byte));
+        parser2.push(std::slice::from_ref(byte));
     }
 });

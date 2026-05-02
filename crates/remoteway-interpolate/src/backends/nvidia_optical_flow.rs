@@ -1,4 +1,5 @@
 use std::ffi::CStr;
+use std::mem::size_of;
 use std::sync::{Arc, Mutex};
 
 use ash::vk;
@@ -22,20 +23,20 @@ struct PushConstants {
     search_radius: u32,
 }
 
-/// Push constants for the flow_convert shader (f16 → f32 conversion).
+/// Push constants for the `flow_convert` shader (f16 → f32 conversion).
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct FlowConvertPc {
     count: u32,
 }
 
-/// NVIDIA optical flow frame interpolator using VK_NV_optical_flow extension.
+/// NVIDIA optical flow frame interpolator using `VK_NV_optical_flow` extension.
 ///
 /// Uses NVIDIA's hardware-accelerated optical flow engine (available on
 /// Turing and newer GPUs) for high-quality motion estimation, combined
 /// with a Vulkan compute warp/blend pass for the actual interpolation.
 ///
-/// The VK_NV_optical_flow extension provides dedicated hardware units
+/// The `VK_NV_optical_flow` extension provides dedicated hardware units
 /// for motion estimation that are significantly faster and higher quality
 /// than software block matching.
 pub struct NvidiaOpticalFlowInterpolator {
@@ -54,7 +55,7 @@ pub struct NvidiaOpticalFlowInterpolator {
     cached: Mutex<Option<NvOfResources>>,
 }
 
-/// VK_NV_optical_flow extension function pointers.
+/// `VK_NV_optical_flow` extension function pointers.
 struct NvOpticalFlowFns {
     create_session: vk::PFN_vkCreateOpticalFlowSessionNV,
     destroy_session: vk::PFN_vkDestroyOpticalFlowSessionNV,
@@ -106,11 +107,13 @@ struct NvOfResources {
 impl NvidiaOpticalFlowInterpolator {
     /// Create a new NVIDIA optical flow interpolator.
     ///
-    /// Requires a Turing or newer NVIDIA GPU with VK_NV_optical_flow support.
+    /// Requires a Turing or newer NVIDIA GPU with `VK_NV_optical_flow` support.
     pub fn new() -> Result<Self, InterpolateError> {
         let ext_name = c"VK_NV_optical_flow";
         let ctx = Arc::new(Mutex::new(VulkanContext::new(&[ext_name])?));
-        let guard = ctx.lock().unwrap();
+        let guard = ctx
+            .lock()
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("mutex poisoned: {e}")))?;
 
         // Verify the device is NVIDIA and has the extension.
         if guard.vendor_id != 0x10DE {
@@ -119,6 +122,8 @@ impl NvidiaOpticalFlowInterpolator {
             ));
         }
 
+        // SAFETY: guard.instance and guard.physical_device are valid handles
+        // from a successfully created VulkanContext.
         let available_exts = unsafe {
             guard
                 .instance
@@ -126,6 +131,8 @@ impl NvidiaOpticalFlowInterpolator {
         }
         .unwrap_or_default();
         let has_of = available_exts.iter().any(|e| {
+            // SAFETY: extension_name is a fixed-size null-terminated
+            // C string populated by enumerate_device_extension_properties.
             let name = unsafe { CStr::from_ptr(e.extension_name.as_ptr()) };
             name == ext_name
         });
@@ -136,10 +143,13 @@ impl NvidiaOpticalFlowInterpolator {
         }
 
         // Load extension function pointers via get_device_proc_addr.
-        // Safety: the extension was confirmed available above; transmute is valid
+        // SAFETY: the extension was confirmed available above; transmute is valid
         // because the Vulkan spec guarantees function signatures for known extension names.
         let of_fns = {
             let load_fn = |name: &CStr| -> Result<unsafe extern "system" fn(), InterpolateError> {
+                // SAFETY: get_device_proc_addr is safe to call because the device
+                // handle is valid and name is a null-terminated CStr pointing to
+                // a known Vulkan extension entry point name.
                 unsafe {
                     guard
                         .instance
@@ -155,7 +165,7 @@ impl NvidiaOpticalFlowInterpolator {
             let bind_fn = load_fn(c"vkBindOpticalFlowSessionImageNV")?;
             let exec_fn = load_fn(c"vkCmdOpticalFlowExecuteNV")?;
 
-            // Safety: function pointer signatures are guaranteed by the Vulkan spec
+            // SAFETY: function pointer signatures are guaranteed by the Vulkan spec
             // for these well-known extension entry points.
             #[allow(clippy::missing_transmute_annotations)]
             unsafe {
@@ -172,6 +182,8 @@ impl NvidiaOpticalFlowInterpolator {
         let convert_spv = ash::util::read_spv(&mut std::io::Cursor::new(FLOW_CONVERT_SPV))
             .map_err(|e| InterpolateError::InitFailed(format!("convert SPIR-V: {e}")))?;
         let convert_module_info = vk::ShaderModuleCreateInfo::default().code(&convert_spv);
+        // SAFETY: guard.device is a valid handle and convert_module_info
+        // references valid SPIR-V code with static lifetime.
         let convert_module = unsafe {
             guard
                 .device
@@ -186,6 +198,9 @@ impl NvidiaOpticalFlowInterpolator {
         ];
         let convert_desc_layout_info =
             vk::DescriptorSetLayoutCreateInfo::default().bindings(&convert_bindings);
+        // SAFETY: guard.device is a valid handle, and
+        // convert_desc_layout_info references valid descriptor set
+        // layout bindings with correct types and stage flags.
         let convert_desc_layout = unsafe {
             guard
                 .device
@@ -196,10 +211,13 @@ impl NvidiaOpticalFlowInterpolator {
         let convert_push_range = vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::COMPUTE)
             .offset(0)
-            .size(std::mem::size_of::<FlowConvertPc>() as u32);
+            .size(size_of::<FlowConvertPc>() as u32);
         let convert_layout_info = vk::PipelineLayoutCreateInfo::default()
             .set_layouts(std::slice::from_ref(&convert_desc_layout))
             .push_constant_ranges(std::slice::from_ref(&convert_push_range));
+        // SAFETY: guard.device is a valid handle, and
+        // convert_layout_info references valid descriptor set layouts
+        // and push constant ranges.
         let convert_pipeline_layout = unsafe {
             guard
                 .device
@@ -219,6 +237,8 @@ impl NvidiaOpticalFlowInterpolator {
         let warp_spv = ash::util::read_spv(&mut std::io::Cursor::new(WARP_BLEND_SPV))
             .map_err(|e| InterpolateError::InitFailed(format!("warp SPIR-V: {e}")))?;
         let warp_module_info = vk::ShaderModuleCreateInfo::default().code(&warp_spv);
+        // SAFETY: guard.device is a valid handle and warp_module_info
+        // references valid SPIR-V code with static lifetime.
         let warp_module = unsafe { guard.device.create_shader_module(&warp_module_info, None) }
             .map_err(|e| InterpolateError::InitFailed(format!("warp shader: {e}")))?;
 
@@ -231,6 +251,9 @@ impl NvidiaOpticalFlowInterpolator {
         ];
         let warp_desc_layout_info =
             vk::DescriptorSetLayoutCreateInfo::default().bindings(&warp_bindings);
+        // SAFETY: guard.device is a valid handle, and
+        // warp_desc_layout_info references valid descriptor set
+        // layout bindings with correct types and stage flags.
         let warp_desc_layout = unsafe {
             guard
                 .device
@@ -241,10 +264,13 @@ impl NvidiaOpticalFlowInterpolator {
         let push_range = vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::COMPUTE)
             .offset(0)
-            .size(std::mem::size_of::<PushConstants>() as u32);
+            .size(size_of::<PushConstants>() as u32);
         let warp_layout_info = vk::PipelineLayoutCreateInfo::default()
             .set_layouts(std::slice::from_ref(&warp_desc_layout))
             .push_constant_ranges(std::slice::from_ref(&push_range));
+        // SAFETY: guard.device is a valid handle, and
+        // warp_layout_info references valid descriptor set layouts
+        // and push constant ranges.
         let warp_pipeline_layout =
             unsafe { guard.device.create_pipeline_layout(&warp_layout_info, None) }
                 .map_err(|e| InterpolateError::InitFailed(format!("pipeline layout: {e}")))?;
@@ -258,6 +284,9 @@ impl NvidiaOpticalFlowInterpolator {
             .layout(warp_pipeline_layout);
 
         // Create both pipelines in one call.
+        // SAFETY: guard.device is a valid handle. Both pipeline info
+        // structs reference valid shader stages and pipeline layouts.
+        // The pipeline cache is null (no cache), which is valid.
         let pipelines = unsafe {
             guard.device.create_compute_pipelines(
                 vk::PipelineCache::null(),
@@ -269,6 +298,8 @@ impl NvidiaOpticalFlowInterpolator {
         let convert_pipeline = pipelines[0];
         let warp_pipeline = pipelines[1];
 
+        // SAFETY: Both shader modules are valid handles and have been
+        // consumed by pipeline creation — they can be safely destroyed.
         unsafe {
             guard.device.destroy_shader_module(convert_module, None);
             guard.device.destroy_shader_module(warp_module, None);
@@ -282,6 +313,8 @@ impl NvidiaOpticalFlowInterpolator {
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .max_sets(4)
             .pool_sizes(&pool_sizes);
+        // SAFETY: guard.device is a valid handle and pool_info
+        // specifies valid pool sizes and max sets.
         let desc_pool = unsafe { guard.device.create_descriptor_pool(&pool_info, None) }
             .map_err(|e| InterpolateError::InitFailed(format!("desc pool: {e}")))?;
 
@@ -302,23 +335,41 @@ impl NvidiaOpticalFlowInterpolator {
     }
 
     fn ensure_resources(&self, width: u32, height: u32) -> Result<(), InterpolateError> {
-        let mut cache = self.cached.lock().unwrap();
+        let mut cache = self
+            .cached
+            .lock()
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("mutex poisoned: {e}")))?;
         if let Some(ref r) = *cache {
             if r.width == width && r.height == height {
                 return Ok(());
             }
-            let guard = self.ctx.lock().unwrap();
-            destroy_resources(&guard.device, &self.of_fns, cache.take().unwrap());
-            unsafe {
+            let guard = self
+                .ctx
+                .lock()
+                .map_err(|e| InterpolateError::InterpolateFailed(format!("mutex poisoned: {e}")))?;
+            let old_res = cache.take().ok_or_else(|| {
+                InterpolateError::InterpolateFailed("cached resources unexpectedly None".into())
+            })?;
+            destroy_resources(&guard.device, &self.of_fns, old_res);
+            // SAFETY: self.desc_pool is a valid handle. The old descriptor
+            // sets allocated from this pool have been freed (by destroying
+            // the old resources), so resetting the pool is safe.
+            if let Err(e) = unsafe {
                 guard
                     .device
                     .reset_descriptor_pool(self.desc_pool, vk::DescriptorPoolResetFlags::empty())
-                    .ok();
+            } {
+                return Err(InterpolateError::InterpolateFailed(format!(
+                    "reset descriptor pool: {e:?}"
+                )));
             }
             drop(guard);
         }
 
-        let guard = self.ctx.lock().unwrap();
+        let guard = self
+            .ctx
+            .lock()
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("mutex poisoned: {e}")))?;
         let frame_size = (width * height * 4) as u64;
         let host_visible =
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
@@ -333,6 +384,10 @@ impl NvidiaOpticalFlowInterpolator {
             .output_grid_size(vk::OpticalFlowGridSizeFlagsNV::TYPE_4X4);
 
         let mut of_session = vk::OpticalFlowSessionNV::null();
+        // SAFETY: guard.device.handle() is a valid VkDevice. session_info
+        // specifies valid width, height, and formats. The of_session output
+        // handle is written by the driver. VK_NV_optical_flow extension was
+        // confirmed available during initialization.
         let result = unsafe {
             (self.of_fns.create_session)(
                 guard.device.handle(),
@@ -360,6 +415,10 @@ impl NvidiaOpticalFlowInterpolator {
             create_of_image(&guard, flow_w, flow_h, vk::Format::R16G16_SFLOAT)?;
 
         // Bind images to optical flow session.
+        // SAFETY: guard.device.handle() is a valid VkDevice. of_session is
+        // a valid optical flow session (just created above). All image views
+        // are valid and have been created with compatible formats and usage
+        // flags for their respective binding points.
         unsafe {
             let _ = (self.of_fns.bind_image)(
                 guard.device.handle(),
@@ -428,6 +487,9 @@ impl NvidiaOpticalFlowInterpolator {
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(self.desc_pool)
             .set_layouts(&layouts);
+        // SAFETY: guard.device and self.desc_pool are valid handles.
+        // alloc_info references valid descriptor set layouts and the
+        // pool has enough capacity (max_sets=4).
         let desc_sets = unsafe { guard.device.allocate_descriptor_sets(&alloc_info) }
             .map_err(|e| InterpolateError::InterpolateFailed(format!("alloc desc: {e}")))?;
 
@@ -490,6 +552,9 @@ impl NvidiaOpticalFlowInterpolator {
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(&warp_bufs[3..4]),
         ];
+        // SAFETY: guard.device is a valid handle. All WriteDescriptorSet
+        // entries reference valid descriptor sets, bindings, and buffer
+        // info structs with correct types and ranges.
         unsafe { guard.device.update_descriptor_sets(&writes, &[]) };
 
         let cmd = guard.allocate_command_buffer()?;
@@ -536,9 +601,17 @@ impl NvidiaOpticalFlowInterpolator {
         let h = a.height;
         self.ensure_resources(w, h)?;
 
-        let guard = self.ctx.lock().unwrap();
-        let cache = self.cached.lock().unwrap();
-        let res = cache.as_ref().unwrap();
+        let guard = self
+            .ctx
+            .lock()
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("mutex poisoned: {e}")))?;
+        let cache = self
+            .cached
+            .lock()
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("mutex poisoned: {e}")))?;
+        let res = cache.as_ref().ok_or_else(|| {
+            InterpolateError::InterpolateFailed("cached resources unexpectedly None".into())
+        })?;
         let frame_size = (w * h * 4) as u64;
 
         // Upload both frames to separate staging buffers (CPU map, no GPU wait).
@@ -566,6 +639,12 @@ impl NvidiaOpticalFlowInterpolator {
         };
 
         // Single command buffer: upload buffers + upload images + OF + flow→motion + warp + readback.
+        // SAFETY: All Vulkan handles (device, command buffer, buffers,
+        // images, image views, pipelines, descriptor sets) are valid.
+        // Image layout transitions follow correct ordering: undefined→
+        // transfer_dst→general→transfer_src. Pipeline barriers ensure
+        // proper synchronization between OF execution, compute dispatches,
+        // and transfer operations.
         unsafe {
             guard
                 .device
@@ -728,7 +807,7 @@ impl NvidiaOpticalFlowInterpolator {
             // Safety: FlowConvertPc is #[repr(C)] with a single u32 field.
             let convert_pc_bytes = std::slice::from_raw_parts(
                 &convert_pc as *const FlowConvertPc as *const u8,
-                std::mem::size_of::<FlowConvertPc>(),
+                size_of::<FlowConvertPc>(),
             );
             guard.device.cmd_bind_pipeline(
                 cmd,
@@ -780,7 +859,7 @@ impl NvidiaOpticalFlowInterpolator {
             // its memory as &[u8] is safe for push constant upload.
             let pc_bytes = std::slice::from_raw_parts(
                 &pc as *const PushConstants as *const u8,
-                std::mem::size_of::<PushConstants>(),
+                size_of::<PushConstants>(),
             );
 
             guard
@@ -882,10 +961,18 @@ impl FrameInterpolator for NvidiaOpticalFlowInterpolator {
 
 impl Drop for NvidiaOpticalFlowInterpolator {
     fn drop(&mut self) {
-        let guard = self.ctx.lock().unwrap();
-        if let Some(res) = self.cached.lock().unwrap().take() {
+        let Ok(guard) = self.ctx.lock() else {
+            return;
+        };
+        if let Ok(mut cache) = self.cached.lock()
+            && let Some(res) = cache.take()
+        {
             destroy_resources(&guard.device, &self.of_fns, res);
         }
+        // SAFETY: All Vulkan handles are valid. Resources are destroyed
+        // in correct order: descriptor pool, pipelines, pipeline layouts,
+        // then descriptor set layouts. No GPU operations can be in flight
+        // because the interpolator is being dropped.
         unsafe {
             guard.device.destroy_descriptor_pool(self.desc_pool, None);
             guard.device.destroy_pipeline(self.convert_pipeline, None);
@@ -931,10 +1018,15 @@ fn create_of_image(
         )
         .initial_layout(vk::ImageLayout::UNDEFINED);
 
+    // SAFETY: ctx.device is a valid handle and image_info is correctly
+    // initialized with valid dimensions, format, and usage flags.
     let image = unsafe { ctx.device.create_image(&image_info, None) }
         .map_err(|e| InterpolateError::InterpolateFailed(format!("create image: {e}")))?;
 
+    // SAFETY: image is a valid handle (just created above).
     let mem_req = unsafe { ctx.device.get_image_memory_requirements(image) };
+    // SAFETY: ctx.instance and ctx.physical_device are valid handles.
+    // This reads static memory properties from the driver.
     let mem_props = unsafe {
         ctx.instance
             .get_physical_device_memory_properties(ctx.physical_device)
@@ -949,6 +1041,7 @@ fn create_of_image(
             type_bits != 0 && prop_match
         })
         .ok_or_else(|| {
+            // SAFETY: image is a valid handle and is not bound to any memory.
             unsafe { ctx.device.destroy_image(image, None) };
             InterpolateError::InterpolateFailed("no suitable image memory type".into())
         })?;
@@ -956,12 +1049,19 @@ fn create_of_image(
     let alloc_info = vk::MemoryAllocateInfo::default()
         .allocation_size(mem_req.size)
         .memory_type_index(mem_type_index);
+    // SAFETY: ctx.device is a valid handle and alloc_info specifies
+    // a valid memory type index and allocation size.
     let memory = unsafe { ctx.device.allocate_memory(&alloc_info, None) }.map_err(|e| {
+        // SAFETY: image is a valid handle and not bound to any memory.
         unsafe { ctx.device.destroy_image(image, None) };
         InterpolateError::InterpolateFailed(format!("allocate image memory: {e}"))
     })?;
 
+    // SAFETY: image and memory are valid handles, the allocation size
+    // covers the image requirements, and the memory type is compatible.
     unsafe { ctx.device.bind_image_memory(image, memory, 0) }.map_err(|e| {
+        // SAFETY: memory and image are valid handles that were just
+        // allocated/created. They are not in use by the GPU.
         unsafe {
             ctx.device.free_memory(memory, None);
             ctx.device.destroy_image(image, None);
@@ -980,7 +1080,11 @@ fn create_of_image(
             base_array_layer: 0,
             layer_count: 1,
         });
+    // SAFETY: ctx.device is a valid handle, image is valid and has the
+    // format and usage flags compatible with the view type.
     let view = unsafe { ctx.device.create_image_view(&view_info, None) }.map_err(|e| {
+        // SAFETY: memory and image are valid handles. The image is bound
+        // to this memory and must be freed together.
         unsafe {
             ctx.device.free_memory(memory, None);
             ctx.device.destroy_image(image, None);
@@ -992,6 +1096,10 @@ fn create_of_image(
 }
 
 fn destroy_resources(device: &ash::Device, of_fns: &NvOpticalFlowFns, res: NvOfResources) {
+    // SAFETY: All handles in NvOfResources are valid and were allocated
+    // from this device. Resources are destroyed in correct order: session
+    // first, then images/views/memory, then buffers/memory. No GPU
+    // operations reference these resources at this point.
     unsafe {
         (of_fns.destroy_session)(device.handle(), res.of_session, std::ptr::null());
         device.destroy_image_view(res.image_a_view, None);
@@ -1034,6 +1142,13 @@ fn desc_binding(binding: u32, ty: vk::DescriptorType) -> vk::DescriptorSetLayout
 // contains raw function pointers loaded from the Vulkan driver. All Vulkan calls
 // are serialized through the Arc<Mutex<VulkanContext>>.
 unsafe impl Send for NvidiaOpticalFlowInterpolator {}
+// SAFETY: The NvOpticalFlowFns function pointers are loaded once during
+// initialization and only called while holding the Mutex lock on ctx. All
+// GPU resources (pipelines, layouts, pool) are accessed through
+// Arc<Mutex<VulkanContext>>, which serializes access. The cached Mutex
+// ensures frame resources are not reallocated concurrently. Shared
+// references (&self) are safe across threads because all mutable state
+// is behind Mutexes.
 unsafe impl Sync for NvidiaOpticalFlowInterpolator {}
 
 #[cfg(test)]
@@ -1048,8 +1163,8 @@ mod tests {
 
     #[test]
     fn push_constants_size() {
-        assert_eq!(std::mem::size_of::<PushConstants>(), 20);
-        assert_eq!(std::mem::size_of::<FlowConvertPc>(), 4);
+        assert_eq!(size_of::<PushConstants>(), 20);
+        assert_eq!(size_of::<FlowConvertPc>(), 4);
     }
 
     #[test]

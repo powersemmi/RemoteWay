@@ -7,12 +7,13 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 pub struct MonitorInfo {
-    /// Stream ID used in FrameHeader for this monitor's frames.
+    /// Stream ID used in `FrameHeader` for this monitor's frames.
     pub stream_id: u16,
     /// Horizontal position in the compositor coordinate space.
     pub x: i16,
     /// Vertical position in the compositor coordinate space.
     pub y: i16,
+    /// Alignment padding; always zero.
     pub _pad: u16,
     /// Width in pixels.
     pub width: u32,
@@ -25,8 +26,11 @@ pub struct MonitorInfo {
 }
 
 impl MonitorInfo {
+    /// Size of `MonitorInfo` in bytes (always 24).
     pub const SIZE: usize = size_of::<Self>();
 
+    /// Create a new `MonitorInfo` descriptor.
+    #[must_use]
     pub fn new(
         stream_id: u16,
         x: i16,
@@ -65,8 +69,11 @@ pub struct FractionalScale {
 }
 
 impl FractionalScale {
+    /// Size of `FractionalScale` in bytes (always 4).
     pub const SIZE: usize = size_of::<Self>();
 
+    /// Create a new `FractionalScale` descriptor.
+    #[must_use]
     pub fn new(stream_id: u16, scale_120: u16) -> Self {
         Self {
             stream_id,
@@ -75,6 +82,7 @@ impl FractionalScale {
     }
 
     /// Get the floating-point scale value.
+    #[must_use]
     pub fn scale_f64(&self) -> f64 {
         self.scale_120 as f64 / 120.0
     }

@@ -4,7 +4,7 @@ use crate::frame_handle::FrameHandle;
 
 /// Pre-allocated pool of frame buffers aligned to 64 bytes for AVX-512.
 ///
-/// Buffers are managed via a lock-free free-list encoded in a single AtomicU64
+/// Buffers are managed via a lock-free free-list encoded in a single `AtomicU64`
 /// (bitset of available slots, max 64 slots). acquire/release are wait-free on
 /// the fast path; only contention on the same slot can loop.
 pub struct BufferPool {
@@ -19,11 +19,14 @@ pub struct BufferPool {
 // SAFETY: BufferPool owns its allocation exclusively; the free_mask ensures
 // no two callers hold the same slot simultaneously.
 unsafe impl Send for BufferPool {}
+// SAFETY: BufferPool uses AtomicU64 for lock-free synchronization.
+#[allow(clippy::undocumented_unsafe_blocks)]
 unsafe impl Sync for BufferPool {}
 
 impl BufferPool {
     /// Create a pool of `capacity` buffers each `frame_size` bytes.
     /// `capacity` must be ≤ 64. `frame_size` is rounded up to a multiple of 64.
+    #[must_use]
     pub fn new(capacity: usize, frame_size: usize) -> Self {
         assert!(capacity > 0 && capacity <= 64, "capacity must be 1..=64");
         let aligned_size = (frame_size + 63) & !63;
@@ -31,7 +34,10 @@ impl BufferPool {
 
         // SAFETY: Layout is non-zero (asserted above). We use alloc_zeroed so
         // buffers start in a defined state. align=64 satisfies AVX-512 loads.
-        let layout = std::alloc::Layout::from_size_align(total, 64).expect("invalid layout");
+        // SAFETY: total > 0 and 64 is a valid alignment for AVX-512.
+        let layout = std::alloc::Layout::from_size_align(total, 64)
+            .unwrap_or_else(|_| panic!("BUG: invalid layout: total={total}, align=64"));
+        // SAFETY: layout is valid and non-zero (capacity >= 1).
         let storage = unsafe { std::alloc::alloc_zeroed(layout) };
         assert!(!storage.is_null(), "allocation failed");
 
@@ -137,10 +143,12 @@ impl BufferPool {
         }
     }
 
+    /// Total number of slots in the pool.
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
+    /// Size of each frame buffer in bytes (aligned up to 64).
     pub fn frame_size(&self) -> usize {
         self.frame_size
     }
@@ -155,7 +163,10 @@ impl Drop for BufferPool {
     fn drop(&mut self) {
         let aligned_size = self.frame_size;
         let total = aligned_size * self.capacity;
-        let layout = std::alloc::Layout::from_size_align(total, 64).expect("invalid layout");
+        // The layout here mirrors the one used at allocation time in `new`.
+        #[allow(clippy::expect_used)]
+        let layout = std::alloc::Layout::from_size_align(total, 64)
+            .unwrap_or_else(|_| panic!("BUG: invalid layout in drop: total={total}, align=64"));
         // SAFETY: `storage` was allocated with this exact layout in `new`.
         unsafe { std::alloc::dealloc(self.storage, layout) };
     }
@@ -191,6 +202,7 @@ mod tests {
     fn slot_ptr_is_64_byte_aligned() {
         let pool = BufferPool::new(4, 100);
         let h = pool.acquire(0).unwrap();
+        // SAFETY: handle was just acquired and is exclusively held.
         let ptr = unsafe { pool.slot_ptr(&h) };
         assert_eq!(ptr as usize % 64, 0);
         pool.release(h);
@@ -252,6 +264,7 @@ mod tests {
         let pool = BufferPool::new(2, 64);
         let h = pool.acquire(0).unwrap();
         let pattern = [0xAB_u8; 64];
+        // SAFETY: handle is exclusively held by this test.
         unsafe {
             pool.slot_mut(&h).copy_from_slice(&pattern);
             assert_eq!(pool.slot(&h), &pattern);
@@ -264,6 +277,7 @@ mod tests {
         let pool = BufferPool::new(4, 64);
         let h0 = pool.acquire(0).unwrap();
         let h1 = pool.acquire(1).unwrap();
+        // SAFETY: both handles are exclusively held by this test.
         unsafe {
             pool.slot_mut(&h0).fill(0x11);
             pool.slot_mut(&h1).fill(0x22);

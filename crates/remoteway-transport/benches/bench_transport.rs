@@ -18,7 +18,7 @@ fn make_frames(count: usize, payload_size: usize) -> Vec<u8> {
     out
 }
 
-/// Throughput of StreamParser::push for different payload sizes.
+/// Throughput of `StreamParser::push` for different payload sizes.
 fn bench_parser_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("StreamParser/throughput");
 
@@ -60,7 +60,7 @@ fn bench_single_frame_latency(c: &mut Criterion) {
     });
 }
 
-/// Throughput of StreamParser fed byte by byte (worst case fragmentation).
+/// Throughput of `StreamParser` fed byte by byte (worst case fragmentation).
 fn bench_byte_by_byte(c: &mut Criterion) {
     // 16 small frames fed one byte at a time.
     let data = make_frames(16, 32);

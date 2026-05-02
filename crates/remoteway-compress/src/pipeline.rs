@@ -11,6 +11,7 @@ pub struct CompressedFrame {
     pub region_offsets: Vec<usize>,
     /// Sizes of each compressed region blob.
     pub region_sizes: Vec<usize>,
+    /// Timing and size metrics for this frame.
     pub stats: FrameStats,
 }
 

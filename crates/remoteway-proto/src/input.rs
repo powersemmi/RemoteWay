@@ -4,9 +4,13 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 pub struct PointerMotion {
+    /// Target surface ID.
     pub surface_id: u16,
+    /// Alignment padding; always zero.
     pub _pad: u16,
+    /// X coordinate in surface-local pixels.
     pub x: f32,
+    /// Y coordinate in surface-local pixels.
     pub y: f32,
 }
 
@@ -14,7 +18,7 @@ pub struct PointerMotion {
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 pub struct PointerButton {
-    /// Linux evdev button code (BTN_LEFT = 0x110, etc.)
+    /// Linux evdev button code (`BTN_LEFT` = 0x110, etc.).
     pub button: u32,
     /// 1 = pressed, 0 = released.
     pub state: u32,
@@ -26,7 +30,9 @@ pub struct PointerButton {
 pub struct PointerAxis {
     /// 0 = vertical, 1 = horizontal.
     pub axis: u8,
+    /// Alignment padding; always zero.
     pub _pad: [u8; 3],
+    /// Scroll delta (positive = down/right).
     pub value: f32,
 }
 
@@ -44,9 +50,13 @@ pub struct KeyEvent {
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputKind {
+    /// Pointer motion event.
     PointerMotion = 0,
+    /// Pointer button press or release.
     PointerButton = 1,
+    /// Pointer scroll (axis) event.
     PointerAxis = 2,
+    /// Keyboard key press or release.
     Key = 3,
 }
 
@@ -66,18 +76,22 @@ impl TryFrom<u8> for InputKind {
 /// Fixed-size input event (16 bytes) transmitted on the input stream.
 ///
 /// Layout: kind(1) + _pad(3) + payload(12) = 16 bytes.
-/// `payload` is large enough to hold the widest sub-type (PointerMotion = 12 bytes).
+/// `payload` is large enough to hold the widest sub-type (`PointerMotion` = 12 bytes).
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 pub struct InputEvent {
+    /// Discriminant from [`InputKind`].
     pub kind: u8,
+    /// Alignment padding; always zero.
     pub _pad: [u8; 3],
+    /// Sub-type payload (size varies by kind).
     pub payload: [u8; 12],
 }
 
-const _: () = assert!(std::mem::size_of::<InputEvent>() == 16);
+const _: () = assert!(size_of::<InputEvent>() == 16);
 
 impl InputEvent {
+    /// Pack a sub-type's bytes into the fixed-size payload.
     fn from_bytes_padded(kind: InputKind, src: &[u8]) -> Self {
         let mut payload = [0u8; 12];
         payload[..src.len()].copy_from_slice(src);
@@ -88,28 +102,31 @@ impl InputEvent {
         }
     }
 
+    /// Create an `InputEvent` from a [`PointerMotion`].
+    #[must_use]
     pub fn pointer_motion(motion: PointerMotion) -> Self {
-        Self::from_bytes_padded(
-            InputKind::PointerMotion,
-            zerocopy::IntoBytes::as_bytes(&motion),
-        )
+        Self::from_bytes_padded(InputKind::PointerMotion, IntoBytes::as_bytes(&motion))
     }
 
+    /// Create an `InputEvent` from a [`PointerButton`].
+    #[must_use]
     pub fn pointer_button(btn: PointerButton) -> Self {
-        Self::from_bytes_padded(
-            InputKind::PointerButton,
-            zerocopy::IntoBytes::as_bytes(&btn),
-        )
+        Self::from_bytes_padded(InputKind::PointerButton, IntoBytes::as_bytes(&btn))
     }
 
+    /// Create an `InputEvent` from a [`PointerAxis`].
+    #[must_use]
     pub fn pointer_axis(axis: PointerAxis) -> Self {
-        Self::from_bytes_padded(InputKind::PointerAxis, zerocopy::IntoBytes::as_bytes(&axis))
+        Self::from_bytes_padded(InputKind::PointerAxis, IntoBytes::as_bytes(&axis))
     }
 
+    /// Create an `InputEvent` from a [`KeyEvent`].
+    #[must_use]
     pub fn key(key: KeyEvent) -> Self {
-        Self::from_bytes_padded(InputKind::Key, zerocopy::IntoBytes::as_bytes(&key))
+        Self::from_bytes_padded(InputKind::Key, IntoBytes::as_bytes(&key))
     }
 
+    /// Decode the `kind` byte into an [`InputKind`] discriminant.
     pub fn kind(&self) -> Result<InputKind, u8> {
         InputKind::try_from(self.kind)
     }

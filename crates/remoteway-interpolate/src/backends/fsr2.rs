@@ -1,3 +1,4 @@
+use std::mem::size_of;
 use std::sync::{Arc, Mutex};
 
 use ash::vk;
@@ -74,7 +75,9 @@ impl Fsr2Interpolator {
         search_radius: u32,
     ) -> Result<Self, InterpolateError> {
         let ctx = Arc::new(Mutex::new(VulkanContext::new(&[])?));
-        let guard = ctx.lock().unwrap();
+        let guard = ctx
+            .lock()
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("mutex poisoned: {e}")))?;
 
         // Create shader modules.
         let motion_spv = ash::util::read_spv(&mut std::io::Cursor::new(MOTION_EST_SPV))
@@ -85,8 +88,12 @@ impl Fsr2Interpolator {
         let motion_module_info = vk::ShaderModuleCreateInfo::default().code(&motion_spv);
         let warp_module_info = vk::ShaderModuleCreateInfo::default().code(&warp_spv);
 
+        // SAFETY: guard.device is a valid handle and motion_module_info
+        // references valid SPIR-V code with static lifetime.
         let motion_module = unsafe { guard.device.create_shader_module(&motion_module_info, None) }
             .map_err(|e| InterpolateError::InitFailed(format!("motion shader: {e}")))?;
+        // SAFETY: guard.device is a valid handle and warp_module_info
+        // references valid SPIR-V code with static lifetime.
         let warp_module = unsafe { guard.device.create_shader_module(&warp_module_info, None) }
             .map_err(|e| InterpolateError::InitFailed(format!("warp shader: {e}")))?;
 
@@ -99,6 +106,9 @@ impl Fsr2Interpolator {
         ];
         let motion_desc_layout_info =
             vk::DescriptorSetLayoutCreateInfo::default().bindings(&motion_bindings);
+        // SAFETY: guard.device is a valid handle, and
+        // motion_desc_layout_info references valid descriptor set
+        // layout bindings with correct types and stage flags.
         let motion_desc_layout = unsafe {
             guard
                 .device
@@ -115,6 +125,9 @@ impl Fsr2Interpolator {
         ];
         let warp_desc_layout_info =
             vk::DescriptorSetLayoutCreateInfo::default().bindings(&warp_bindings);
+        // SAFETY: guard.device is a valid handle, and
+        // warp_desc_layout_info references valid descriptor set
+        // layout bindings with correct types and stage flags.
         let warp_desc_layout = unsafe {
             guard
                 .device
@@ -126,12 +139,15 @@ impl Fsr2Interpolator {
         let push_range = vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::COMPUTE)
             .offset(0)
-            .size(std::mem::size_of::<PushConstants>() as u32);
+            .size(size_of::<PushConstants>() as u32);
 
         // Pipeline layouts.
         let motion_layout_info = vk::PipelineLayoutCreateInfo::default()
             .set_layouts(std::slice::from_ref(&motion_desc_layout))
             .push_constant_ranges(std::slice::from_ref(&push_range));
+        // SAFETY: guard.device is a valid handle, and
+        // motion_layout_info references valid descriptor set layouts
+        // and push constant ranges.
         let motion_pipeline_layout = unsafe {
             guard
                 .device
@@ -142,6 +158,9 @@ impl Fsr2Interpolator {
         let warp_layout_info = vk::PipelineLayoutCreateInfo::default()
             .set_layouts(std::slice::from_ref(&warp_desc_layout))
             .push_constant_ranges(std::slice::from_ref(&push_range));
+        // SAFETY: guard.device is a valid handle, and
+        // warp_layout_info references valid descriptor set layouts
+        // and push constant ranges.
         let warp_pipeline_layout =
             unsafe { guard.device.create_pipeline_layout(&warp_layout_info, None) }
                 .map_err(|e| InterpolateError::InitFailed(format!("pipeline layout: {e}")))?;
@@ -163,6 +182,9 @@ impl Fsr2Interpolator {
             .stage(warp_stage)
             .layout(warp_pipeline_layout);
 
+        // SAFETY: guard.device is a valid handle. Both pipeline info
+        // structs reference valid shader stages and pipeline layouts.
+        // The pipeline cache is null (no cache), which is valid.
         let pipelines = unsafe {
             guard.device.create_compute_pipelines(
                 vk::PipelineCache::null(),
@@ -183,10 +205,14 @@ impl Fsr2Interpolator {
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .max_sets(4)
             .pool_sizes(&pool_sizes);
+        // SAFETY: guard.device is a valid handle and pool_info
+        // specifies valid pool sizes and max sets.
         let desc_pool = unsafe { guard.device.create_descriptor_pool(&pool_info, None) }
             .map_err(|e| InterpolateError::InitFailed(format!("desc pool: {e}")))?;
 
         // Cleanup shader modules (no longer needed after pipeline creation).
+        // SAFETY: Both shader modules are valid handles and have been
+        // consumed by pipeline creation — they can be safely destroyed.
         unsafe {
             guard.device.destroy_shader_module(motion_module, None);
             guard.device.destroy_shader_module(warp_module, None);
@@ -210,24 +236,42 @@ impl Fsr2Interpolator {
     }
 
     fn ensure_resources(&self, width: u32, height: u32) -> Result<(), InterpolateError> {
-        let mut cache = self.cached.lock().unwrap();
+        let mut cache = self
+            .cached
+            .lock()
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("mutex poisoned: {e}")))?;
         if let Some(ref r) = *cache {
             if r.width == width && r.height == height {
                 return Ok(());
             }
             // Clean up old resources and reset descriptor pool.
-            let guard = self.ctx.lock().unwrap();
-            destroy_resources(&guard.device, cache.take().unwrap());
-            unsafe {
+            let guard = self
+                .ctx
+                .lock()
+                .map_err(|e| InterpolateError::InterpolateFailed(format!("mutex poisoned: {e}")))?;
+            let old_res = cache.take().ok_or_else(|| {
+                InterpolateError::InterpolateFailed("cached resources unexpectedly None".into())
+            })?;
+            destroy_resources(&guard.device, old_res);
+            // SAFETY: self.desc_pool is a valid handle. The old descriptor
+            // sets allocated from this pool have been freed (by destroying
+            // the old resources), so resetting the pool is safe.
+            if let Err(e) = unsafe {
                 guard
                     .device
                     .reset_descriptor_pool(self.desc_pool, vk::DescriptorPoolResetFlags::empty())
-                    .ok();
+            } {
+                return Err(InterpolateError::InterpolateFailed(format!(
+                    "reset descriptor pool: {e:?}"
+                )));
             }
             drop(guard);
         }
 
-        let guard = self.ctx.lock().unwrap();
+        let guard = self
+            .ctx
+            .lock()
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("mutex poisoned: {e}")))?;
 
         let frame_size = (width * height * 4) as u64;
         let blocks_x = width.div_ceil(self.block_size);
@@ -269,6 +313,9 @@ impl Fsr2Interpolator {
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(self.desc_pool)
             .set_layouts(&layouts);
+        // SAFETY: guard.device and self.desc_pool are valid handles.
+        // alloc_info references valid descriptor set layouts and the
+        // pool has enough capacity (max_sets=4).
         let desc_sets = unsafe { guard.device.allocate_descriptor_sets(&alloc_info) }
             .map_err(|e| InterpolateError::InterpolateFailed(format!("alloc desc: {e}")))?;
 
@@ -337,6 +384,9 @@ impl Fsr2Interpolator {
                 .buffer_info(&bufs_info[6..7]),
         ];
 
+        // SAFETY: guard.device is a valid handle. All WriteDescriptorSet
+        // entries reference valid descriptor sets, bindings, and buffer
+        // info structs with correct types and ranges.
         unsafe { guard.device.update_descriptor_sets(&writes, &[]) };
 
         let cmd = guard.allocate_command_buffer()?;
@@ -371,9 +421,17 @@ impl Fsr2Interpolator {
         let h = a.height;
         self.ensure_resources(w, h)?;
 
-        let guard = self.ctx.lock().unwrap();
-        let cache = self.cached.lock().unwrap();
-        let res = cache.as_ref().unwrap();
+        let guard = self
+            .ctx
+            .lock()
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("mutex poisoned: {e}")))?;
+        let cache = self
+            .cached
+            .lock()
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("mutex poisoned: {e}")))?;
+        let res = cache.as_ref().ok_or_else(|| {
+            InterpolateError::InterpolateFailed("cached resources unexpectedly None".into())
+        })?;
 
         let frame_size = (w * h * 4) as u64;
 
@@ -384,6 +442,10 @@ impl Fsr2Interpolator {
         let cmd = res.cmd;
 
         // Single command buffer: upload A + upload B + motion + warp + readback.
+        // SAFETY: All Vulkan handles (device, command buffer, buffers, pipeline,
+        // descriptor sets) are valid. The command buffer was allocated from this
+        // device's pool. Pipeline barriers, dispatches, and copies follow valid
+        // ordering: transfer→compute→compute→transfer with appropriate barriers.
         unsafe {
             guard
                 .device
@@ -426,7 +488,7 @@ impl Fsr2Interpolator {
             };
             let pc_bytes = std::slice::from_raw_parts(
                 &pc as *const PushConstants as *const u8,
-                std::mem::size_of::<PushConstants>(),
+                size_of::<PushConstants>(),
             );
 
             let blocks_x = w.div_ceil(self.block_size);
@@ -572,10 +634,18 @@ impl FrameInterpolator for Fsr2Interpolator {
 
 impl Drop for Fsr2Interpolator {
     fn drop(&mut self) {
-        let guard = self.ctx.lock().unwrap();
-        if let Some(res) = self.cached.lock().unwrap().take() {
+        let Ok(guard) = self.ctx.lock() else {
+            return;
+        };
+        if let Ok(mut cache) = self.cached.lock()
+            && let Some(res) = cache.take()
+        {
             destroy_resources(&guard.device, res);
         }
+        // SAFETY: All Vulkan handles are valid. Resources are destroyed
+        // in correct order: descriptor pool, pipelines, pipeline layouts,
+        // then descriptor set layouts. No GPU operations can be in flight
+        // because the interpolator is being dropped.
         unsafe {
             guard.device.destroy_descriptor_pool(self.desc_pool, None);
             guard.device.destroy_pipeline(self.motion_pipeline, None);
@@ -597,6 +667,10 @@ impl Drop for Fsr2Interpolator {
 }
 
 fn destroy_resources(device: &ash::Device, res: Fsr2Resources) {
+    // SAFETY: All buffer and memory handles in Fsr2Resources are valid
+    // and have been allocated from this device. Each buffer/memory pair
+    // is destroyed correctly: free memory after the buffer is destroyed.
+    // No GPU operations reference these resources at this point.
     unsafe {
         device.destroy_buffer(res.frame_a_buf, None);
         device.free_memory(res.frame_a_mem, None);
@@ -635,7 +709,7 @@ mod tests {
 
     #[test]
     fn push_constants_size() {
-        assert_eq!(std::mem::size_of::<PushConstants>(), 20);
+        assert_eq!(size_of::<PushConstants>(), 20);
     }
 
     #[test]

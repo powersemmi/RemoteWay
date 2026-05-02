@@ -7,7 +7,7 @@ use wayland_client::{Dispatch, QueueHandle};
 
 use crate::error::CaptureError;
 
-/// One-buffer SHM slot backed by its own memfd + wl_shm_pool.
+/// One-buffer SHM slot backed by its own memfd + `wl_shm_pool`.
 ///
 /// Each slot owns a private fd, mmap, pool, and `wl_buffer` at offset 0.
 /// Keeping every buffer on its own pool sidesteps a known issue where some
@@ -16,10 +16,15 @@ use crate::error::CaptureError;
 /// reporting `invalid_buffer`. With offset 0 the buffer/pool/fd correspondence
 /// is unambiguous and matches what compositors typically test against.
 struct ShmSlot {
+    /// Memfd file descriptor backing the SHM mapping.
     _fd: OwnedFd,
+    /// Pointer to the mmap'd buffer.
     map: NonNull<std::ffi::c_void>,
+    /// Size of the mmap'd region in bytes.
     map_size: usize,
+    /// `wl_shm_pool` created from the fd at offset 0.
     pool: wl_shm_pool::WlShmPool,
+    /// `wl_buffer` created from the pool at offset 0.
     buffer: wl_buffer::WlBuffer,
 }
 
@@ -35,9 +40,13 @@ unsafe impl Send for ShmSlot {}
 pub struct ShmBufferPool {
     slots: [ShmSlot; 2],
     active: usize,
+    /// Frame width in pixels.
     pub width: u32,
+    /// Frame height in pixels.
     pub height: u32,
+    /// Bytes per row.
     pub stride: u32,
+    ///  pixel format.
     pub format: wl_shm::Format,
 }
 
@@ -48,7 +57,7 @@ impl ShmBufferPool {
     /// * `shm` - The `wl_shm` global from the compositor.
     /// * `width`, `height` - Frame dimensions.
     /// * `stride` - Bytes per row.
-    /// * `format` - Pixel format code (wl_shm format).
+    /// * `format` - Pixel format code (`wl_shm` format).
     /// * `qh` - Queue handle for Wayland protocol dispatch.
     pub fn new<D>(
         shm: &wl_shm::WlShm,
@@ -92,7 +101,8 @@ impl ShmBufferPool {
         })
     }
 
-    /// Get the wl_buffer that the compositor should write to.
+    /// Get the `wl_buffer` that the compositor should write to.
+    #[must_use]
     pub fn active_buffer(&self) -> &wl_buffer::WlBuffer {
         &self.slots[self.active].buffer
     }
@@ -102,6 +112,7 @@ impl ShmBufferPool {
     /// # Safety
     /// The compositor must not be concurrently writing to this buffer.
     /// Call only after receiving the `ready` event.
+    #[must_use]
     pub unsafe fn active_data(&self) -> &[u8] {
         let slot = &self.slots[self.active];
         let buf_size = self.stride as usize * self.height as usize;
@@ -115,6 +126,7 @@ impl ShmBufferPool {
     }
 
     /// Buffer size in bytes (single buffer, not total).
+    #[must_use]
     pub fn buffer_size(&self) -> usize {
         self.stride as usize * self.height as usize
     }
@@ -148,7 +160,8 @@ impl ShmSlot {
         let map = unsafe {
             nix::sys::mman::mmap(
                 None,
-                std::num::NonZero::new(size).unwrap(),
+                #[allow(clippy::expect_used)]
+                std::num::NonZero::new(size).expect("size > 0"),
                 ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
                 MapFlags::MAP_SHARED,
                 &fd,
@@ -159,7 +172,15 @@ impl ShmSlot {
 
         // SAFETY: map is valid and covers `size` bytes.
         unsafe {
-            let _ = madvise(map, size, MmapAdvise::MADV_SEQUENTIAL);
+            // MADV_SEQUENTIAL is a hint; failure is non-critical but worth
+            // logging in case the kernel rejects the advise for this region.
+            if let Err(e) = madvise(map, size, MmapAdvise::MADV_SEQUENTIAL) {
+                tracing::warn!(
+                    size,
+                    error = %e,
+                    "madvise MADV_SEQUENTIAL failed"
+                );
+            }
         }
 
         let pool = shm.create_pool(fd.as_fd(), size as i32, qh, ());
@@ -189,7 +210,15 @@ impl Drop for ShmSlot {
         self.pool.destroy();
         // SAFETY: map was created with mmap of map_size bytes.
         unsafe {
-            let _ = munmap(self.map, self.map_size);
+            // munmap failure in Drop is unexpected but not actionable —
+            // we cannot recover and the OS will clean up on process exit.
+            if let Err(e) = munmap(self.map, self.map_size) {
+                tracing::error!(
+                    size = self.map_size,
+                    error = %e,
+                    "munmap failed in ShmSlot::drop"
+                );
+            }
         }
         // fd is dropped automatically by OwnedFd.
     }

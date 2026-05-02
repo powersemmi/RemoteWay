@@ -19,7 +19,7 @@ pub type EventSender = Box<dyn Fn(&InputEvent) -> bool + Send>;
 pub struct InputCaptureConfig {
     /// CPU core to pin the thread to (default: 0).
     pub core_id: usize,
-    /// SCHED_FIFO priority (default: 99 — highest on client).
+    /// `SCHED_FIFO` priority (default: 99 — highest on client).
     pub sched_priority: u8,
 }
 
@@ -36,7 +36,7 @@ impl Default for InputCaptureConfig {
 ///
 /// The thread captures pointer and keyboard events from the local Wayland
 /// compositor and forwards them to the transport layer via the `EventSender`
-/// callback. This is the highest-priority thread on the client (SCHED_FIFO 99).
+/// callback. This is the highest-priority thread on the client (`SCHED_FIFO` 99).
 #[must_use]
 pub struct InputCaptureThread {
     join_handle: Option<JoinHandle<Result<(), InputError>>>,
@@ -68,11 +68,16 @@ impl InputCaptureThread {
     pub fn stop(&mut self) {
         self.stop_flag.store(true, Ordering::Release);
         if let Some(handle) = self.join_handle.take() {
-            let _ = handle.join();
+            match handle.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!("capture thread exited with error: {e}"),
+                Err(_) => tracing::warn!("capture thread panicked"),
+            }
         }
     }
 
     /// Check if the thread is still running.
+    #[must_use]
     pub fn is_running(&self) -> bool {
         self.join_handle.as_ref().is_some_and(|h| !h.is_finished())
     }

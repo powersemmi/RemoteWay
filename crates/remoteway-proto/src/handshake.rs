@@ -2,14 +2,19 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// Capture backend flags (bitmask).
 pub mod capture_flags {
+    /// wlr-screencopy protocol (wlroots).
     pub const WLR_SCREENCOPY: u8 = 1 << 0;
+    /// ext-image-capture-source-v1 protocol.
     pub const EXT_IMAGE_CAPTURE: u8 = 1 << 1;
+    /// XDG Desktop Portal screen-cast.
     pub const PORTAL: u8 = 1 << 2;
 }
 
 /// Compression algorithm flags (bitmask).
 pub mod compress_flags {
+    /// LZ4 fast compression.
     pub const LZ4: u8 = 1 << 0;
+    /// Zstandard compression (higher ratio).
     pub const ZSTD: u8 = 1 << 1;
 }
 
@@ -26,14 +31,18 @@ pub struct HandshakePayload {
     pub capture_flags: u8,
     /// Bitmask of supported compression algorithms.
     pub compress_flags: u8,
+    /// Reserved for future use; zeroed on send, ignored on receive.
     pub _reserved: [u8; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<HandshakePayload>() == 8);
+const _: () = assert!(size_of::<HandshakePayload>() == 8);
 
 impl HandshakePayload {
+    /// Current protocol version (incremented on breaking changes).
     pub const PROTOCOL_VERSION: u16 = 1;
 
+    /// Create a new handshake payload with the given capability flags.
+    #[must_use]
     pub fn new(capture_flags: u8, compress_flags: u8) -> Self {
         Self {
             version: Self::PROTOCOL_VERSION,
@@ -52,7 +61,7 @@ mod tests {
 
     #[test]
     fn handshake_is_8_bytes() {
-        assert_eq!(std::mem::size_of::<HandshakePayload>(), 8);
+        assert_eq!(size_of::<HandshakePayload>(), 8);
     }
 
     #[test]

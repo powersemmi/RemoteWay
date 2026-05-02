@@ -13,7 +13,7 @@ fn arb_frame() -> impl Strategy<Value = Vec<u8>> {
     prop::collection::vec(any::<u8>(), FRAME_BYTES..=FRAME_BYTES)
 }
 
-/// Generate a valid non-empty DamageRect within the W×H frame.
+/// Generate a valid non-empty `DamageRect` within the W×H frame.
 fn arb_rect() -> impl Strategy<Value = DamageRect> {
     (0u32..W as u32, 0u32..H as u32).prop_flat_map(|(x, y)| {
         let max_w = (W as u32 - x).max(1);

@@ -9,13 +9,21 @@ use crate::error::CaptureError;
 /// Information about a connected display output.
 #[derive(Debug, Clone)]
 pub struct OutputInfo {
+    /// Human-readable name (e.g., "HDMI-A-1", "eDP-1").
     pub name: String,
+    /// Human-readable description (e.g., "Dell U2720Q").
     pub description: String,
+    /// X position in the compositor's global coordinate space.
     pub x: i32,
+    /// Y position in the compositor's global coordinate space.
     pub y: i32,
+    /// Width in logical pixels.
     pub width: i32,
+    /// Height in logical pixels.
     pub height: i32,
+    /// Refresh rate in millihertz (e.g., 60000 = 60 Hz).
     pub refresh_mhz: i32,
+    /// Output scale factor (e.g., 1, 2).
     pub scale: i32,
     /// Wayland global name for this output.
     pub global_name: u32,
@@ -37,7 +45,7 @@ impl OutputInfo {
     }
 }
 
-/// Enumerates Wayland outputs via wl_output + xdg-output-v1.
+/// Enumerates Wayland outputs via `wl_output` + xdg-output-v1.
 pub struct OutputEnumerator {
     outputs: Vec<OutputInfo>,
 }
@@ -57,19 +65,24 @@ impl OutputEnumerator {
             pending_xdg_outputs: Vec::new(),
         };
 
-        // Get the registry.
-        display.get_registry(&qh, ());
+        // The WlRegistry is not stored — global advertisements arrive
+        // as events dispatched through the queue.
+        let _registry = display.get_registry(&qh, ());
 
         // First round-trip: discover globals (wl_output, xdg_output_manager).
-        event_queue.roundtrip(&mut state)?;
+        let dispatched = event_queue.roundtrip(&mut state)?;
+        tracing::trace!(dispatched, "output enumerate: first roundtrip");
 
         // If xdg_output_manager is available, request xdg_output for each wl_output.
         if let Some(ref manager) = state.xdg_output_manager {
             for (_info, wl_out) in &state.pending_xdg_outputs {
-                manager.get_xdg_output(wl_out, &qh, ());
+                // The ZxdgOutputV1 object is not stored — its events
+                // (name, description) arrive via dispatch.
+                let _xdg_output = manager.get_xdg_output(wl_out, &qh, ());
             }
             // Second round-trip: receive xdg_output name/description/logical_position.
-            event_queue.roundtrip(&mut state)?;
+            let dispatched = event_queue.roundtrip(&mut state)?;
+            tracing::trace!(dispatched, "output enumerate: second roundtrip");
         }
 
         Ok(Self {
@@ -78,11 +91,13 @@ impl OutputEnumerator {
     }
 
     /// All discovered outputs.
+    #[must_use]
     pub fn outputs(&self) -> &[OutputInfo] {
         &self.outputs
     }
 
     /// Find an output by its name (e.g., "HDMI-A-1", "eDP-1").
+    #[must_use]
     pub fn find_by_name(&self, name: &str) -> Option<&OutputInfo> {
         self.outputs.iter().find(|o| o.name == name)
     }
@@ -155,7 +170,7 @@ impl Dispatch<wl_output::WlOutput, u32> for OutputState {
                 // Only care about the current mode.
                 let is_current = match flags {
                     WEnum::Value(f) => f.contains(wl_output::Mode::Current),
-                    _ => false,
+                    WEnum::Unknown(_) => false,
                 };
                 if is_current {
                     info.width = width;
@@ -346,7 +361,7 @@ mod tests {
         if std::env::var("WAYLAND_DISPLAY").is_ok() {
             return;
         }
-        let result = wayland_client::Connection::connect_to_env();
+        let result = Connection::connect_to_env();
         assert!(result.is_err());
     }
 }

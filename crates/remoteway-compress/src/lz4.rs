@@ -4,13 +4,16 @@ use thiserror::Error;
 
 use crate::delta::DamageRect;
 
+/// Errors that can occur during LZ4 operations.
 #[derive(Debug, Error)]
 pub enum CompressError {
+    /// Decompression of an LZ4 block failed.
     #[error("decompression failed: {0}")]
     Decompress(#[from] lz4_flex::block::DecompressError),
 }
 
 /// Compress a single region's delta bytes. Returns the compressed bytes.
+#[must_use]
 pub fn compress_region(data: &[u8]) -> Vec<u8> {
     compress_prepend_size(data)
 }
@@ -24,6 +27,7 @@ pub fn decompress_region(data: &[u8]) -> Result<Vec<u8>, CompressError> {
 ///
 /// Returns a `Vec` of compressed blobs, one per `regions` entry, in the same order.
 /// Each blob is the LZ4-compressed XOR delta for that region.
+#[must_use]
 pub fn compress_regions_parallel(
     current: &[u8],
     previous: &[u8],

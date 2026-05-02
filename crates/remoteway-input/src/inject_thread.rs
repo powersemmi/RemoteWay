@@ -14,7 +14,7 @@ use crate::inject::VirtualInput;
 pub struct InputInjectConfig {
     /// CPU core to pin the thread to (default: 0).
     pub core_id: usize,
-    /// SCHED_FIFO priority (default: 99 — highest on server).
+    /// `SCHED_FIFO` priority (default: 99 — highest on server).
     pub sched_priority: u8,
     /// SPSC ring buffer capacity for input events (default: 256).
     pub ring_capacity: usize,
@@ -34,7 +34,7 @@ impl Default for InputInjectConfig {
 ///
 /// The thread consumes `InputEvent`s from an rtrb SPSC ring buffer
 /// and injects them into the Wayland compositor via `VirtualInput`.
-/// This is the highest-priority thread on the server (SCHED_FIFO 99, Core 0).
+/// This is the highest-priority thread on the server (`SCHED_FIFO` 99, Core 0).
 #[must_use]
 pub struct InputInjectThread {
     producer: rtrb::Producer<InputEvent>,
@@ -83,7 +83,11 @@ impl InputInjectThread {
     pub fn stop(&mut self) {
         self.stop_flag.store(true, Ordering::Release);
         if let Some(handle) = self.join_handle.take() {
-            let _ = handle.join();
+            match handle.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!("inject thread exited with error: {e}"),
+                Err(_) => tracing::warn!("inject thread panicked"),
+            }
         }
     }
 }

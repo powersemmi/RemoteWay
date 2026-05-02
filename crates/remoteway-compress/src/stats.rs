@@ -3,13 +3,19 @@ use std::time::{Duration, Instant};
 /// Per-frame compression metrics.
 #[derive(Debug, Default, Clone)]
 pub struct FrameStats {
+    /// Total bytes of original (uncompressed) delta data.
     pub original_bytes: usize,
+    /// Total bytes after compression.
     pub compressed_bytes: usize,
+    /// Time spent in delta encoding.
     pub encode_time: Duration,
+    /// Time spent in LZ4/zstd compression.
     pub compress_time: Duration,
 }
 
 impl FrameStats {
+    /// Compressed size divided by original size (1.0 if original is empty).
+    #[must_use]
     pub fn compression_ratio(&self) -> f32 {
         if self.original_bytes == 0 {
             return 1.0;
@@ -17,6 +23,8 @@ impl FrameStats {
         self.compressed_bytes as f32 / self.original_bytes as f32
     }
 
+    /// Sum of encode and compress wall-clock durations.
+    #[must_use]
     pub fn total_time(&self) -> Duration {
         self.encode_time + self.compress_time
     }
@@ -25,14 +33,20 @@ impl FrameStats {
 /// Accumulates [`FrameStats`] across multiple frames.
 #[derive(Debug, Default)]
 pub struct CompressionStats {
+    /// Number of frames recorded.
     pub frame_count: u64,
+    /// Sum of original bytes across all recorded frames.
     pub total_original: u64,
+    /// Sum of compressed bytes across all recorded frames.
     pub total_compressed: u64,
+    /// Cumulative delta-encode time.
     pub total_encode_time: Duration,
+    /// Cumulative compression time.
     pub total_compress_time: Duration,
 }
 
 impl CompressionStats {
+    /// Accumulate a single frame's stats into the running totals.
     pub fn record(&mut self, frame: &FrameStats) {
         self.frame_count += 1;
         self.total_original += frame.original_bytes as u64;
@@ -41,6 +55,8 @@ impl CompressionStats {
         self.total_compress_time += frame.compress_time;
     }
 
+    /// Average compression ratio across all recorded frames.
+    #[must_use]
     pub fn avg_ratio(&self) -> f32 {
         if self.total_original == 0 {
             return 1.0;
@@ -48,6 +64,8 @@ impl CompressionStats {
         self.total_compressed as f32 / self.total_original as f32
     }
 
+    /// Average encode time in milliseconds.
+    #[must_use]
     pub fn avg_encode_ms(&self) -> f32 {
         if self.frame_count == 0 {
             return 0.0;
@@ -55,6 +73,8 @@ impl CompressionStats {
         self.total_encode_time.as_secs_f32() * 1000.0 / self.frame_count as f32
     }
 
+    /// Average compress time in milliseconds.
+    #[must_use]
     pub fn avg_compress_ms(&self) -> f32 {
         if self.frame_count == 0 {
             return 0.0;
@@ -69,12 +89,16 @@ pub struct StageTimer {
 }
 
 impl StageTimer {
+    /// Create and start a new timer.
+    #[must_use]
     pub fn start() -> Self {
         Self {
             start: Instant::now(),
         }
     }
 
+    /// Return the elapsed time since [`start`](Self::start).
+    #[must_use]
     pub fn elapsed(&self) -> Duration {
         self.start.elapsed()
     }
@@ -160,7 +184,7 @@ mod tests {
         // At least a tiny bit of time passes even with no sleep.
         let elapsed = timer.elapsed();
         // Just verify it's a valid (non-panicking) Duration.
-        let _ = elapsed.as_nanos();
+        elapsed.as_nanos();
     }
 
     #[test]

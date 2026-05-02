@@ -8,6 +8,8 @@ pub struct FlowController {
 }
 
 impl FlowController {
+    /// Create a new flow controller with the given high-watermark in bytes.
+    #[must_use]
     pub fn new(high_watermark: usize) -> Self {
         Self {
             high_watermark,
@@ -32,14 +34,21 @@ impl FlowController {
     }
 
     /// Acknowledge that `bytes` have been sent and removed from the queue.
+    ///
+    /// Uses saturating arithmetic — it is safe to call with more bytes than
+    /// are currently pending.
     pub fn on_sent(&mut self, bytes: usize) {
         self.pending = self.pending.saturating_sub(bytes);
     }
 
+    /// Current number of pending bytes.
+    #[must_use]
     pub fn pending_bytes(&self) -> usize {
         self.pending
     }
 
+    /// Whether the pending bytes meet or exceed the high-watermark.
+    #[must_use]
     pub fn is_congested(&self) -> bool {
         self.pending >= self.high_watermark
     }
