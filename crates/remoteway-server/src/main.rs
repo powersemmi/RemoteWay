@@ -1,3 +1,10 @@
+//! `RemoteWay` server binary: screen capture, compression, and transport over SSH.
+//!
+//! Captures the Wayland screen via wlr-screencopy/ext-image-capture/portal,
+//! compresses frames with delta+LZ4/Zstd, and streams them to the client
+//! over stdin/stdout (launched by the client via SSH). Also receives and
+//! injects input events from the client.
+
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -143,6 +150,16 @@ fn determine_capture_mode(app_id: Option<&str>, command: &[String]) -> (bool, bo
 async fn run(cli: cli::Cli) -> Result<()> {
     let shutdown = Arc::new(AtomicBool::new(false));
 
+    #[cfg(feature = "portal")]
+    if cli.select_source {
+        info!("opening portal source-selection dialog…");
+        remoteway_capture::desktop_detect::ensure_wayland_env();
+        remoteway_capture::portal::PortalBackend::setup_restore_token()
+            .context("portal source selection failed")?;
+        info!("restore token saved; SSH sessions can now skip the dialog");
+        return Ok(());
+    }
+
     // Transport over stdin/stdout (server is launched by client via SSH).
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
@@ -220,41 +237,10 @@ async fn run(cli: cli::Cli) -> Result<()> {
             ) {
                 Ok(backend) => backend,
                 Err(e) => {
-                    tracing::warn!("per-window capture via ext-image-capture unavailable ({e:#})");
-
-                    // Try portal per-window capture as intermediate fallback.
-                    // This works on GNOME/KDE where xdg-desktop-portal supports
-                    // per-window screencast. On Niri/wlroots it typically falls
-                    // back to full-screen below.
-                    match pipeline::try_portal_window() {
-                        Ok(backend) => {
-                            info!("using portal per-window capture as fallback");
-                            backend
-                        }
-                        Err(portal_win_err) => {
-                            tracing::info!(
-                                "portal per-window fallback unavailable: {portal_win_err:#}"
-                            );
-
-                            // Last resort: full-screen capture (portal monitor or wlr-screencopy).
-                            match pipeline::try_portal_monitor() {
-                                Ok(backend) => {
-                                    info!("using portal monitor capture as fallback");
-                                    backend
-                                }
-                                Err(portal_mon_err) => {
-                                    tracing::info!(
-                                        "portal monitor fallback unavailable: {portal_mon_err:#}"
-                                    );
-                                    pipeline::create_capture_backend(
-                                        &cli.capture,
-                                        cli.output.as_deref(),
-                                        None,
-                                    )?
-                                }
-                            }
-                        }
-                    }
+                    tracing::warn!(
+                        "per-window capture via ext-image-capture unavailable ({e:#}), falling back to full-screen"
+                    );
+                    pipeline::create_capture_backend(&cli.capture, cli.output.as_deref(), None)?
                 }
             }
         } else {

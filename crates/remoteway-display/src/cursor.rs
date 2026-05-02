@@ -1,3 +1,8 @@
+//! Local cursor overlay with `wl_shm`-backed bitmap rendering.
+//!
+//! Renders a hardware cursor on the client side for instant feedback on
+//! local input events, before the remote server sends a `CursorUpdate`.
+
 use std::os::fd::{AsFd, OwnedFd};
 use std::ptr::NonNull;
 
@@ -139,11 +144,13 @@ impl CursorOverlay {
         pointer.set_cursor(self.last_enter_serial, None, 0, 0);
     }
 
+    /// Current cursor position in surface-local coordinates.
     #[must_use]
     pub fn position(&self) -> (f32, f32) {
         (self.current_x, self.current_y)
     }
 
+    /// Whether the remote server has set a cursor bitmap.
     #[must_use]
     pub fn has_server_cursor(&self) -> bool {
         self.has_server_cursor

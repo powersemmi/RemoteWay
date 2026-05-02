@@ -1,16 +1,25 @@
+//! Error types for frame interpolation.
+
 /// Errors from interpolation backends.
 #[derive(Debug, thiserror::Error)]
 pub enum InterpolateError {
+    /// No interpolation backend is available on this system.
     #[error("no interpolation backend available")]
     NoBackend,
+    /// The GPU device was lost (driver crash, hot-unplug, etc.).
     #[error("GPU device lost")]
     DeviceLost,
+    /// The two input frames have different dimensions.
+    /// Fields: `a.width`, `a.height`, `b.width`, `b.height`.
     #[error("frame dimensions mismatch: {0}x{1} vs {2}x{3}")]
     DimensionMismatch(u32, u32, u32, u32),
+    /// The interpolation factor `t` is outside the valid range `0.0..=1.0`.
     #[error("invalid interpolation factor: {0} (must be 0.0..=1.0)")]
     InvalidFactor(f32),
+    /// Backend-specific initialization failure.
     #[error("backend initialization failed: {0}")]
     InitFailed(String),
+    /// Backend-specific interpolation failure.
     #[error("interpolation failed: {0}")]
     InterpolateFailed(String),
 }

@@ -1,3 +1,5 @@
+//! LZ4 fast block compression and decompression, with parallel region support.
+
 use lz4_flex::{compress_prepend_size, decompress_size_prepended};
 use rayon::prelude::*;
 use thiserror::Error;

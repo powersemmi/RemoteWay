@@ -6,10 +6,11 @@ pub enum CaptureBackendArg {
     Auto,
     /// wlr-screencopy-unstable-v1 (Hyprland, Sway, wlroots)
     WlrScreencopy,
-    /// ext-image-capture-source-v1 (newer standard)
+    /// ext-image-capture-source-v1 (modern Wayland protocol)
     ExtImageCapture,
-    /// xdg-desktop-portal Screencast over `PipeWire` (GNOME, KDE; debug path on wlroots).
-    /// Requires the server to be built with `--features gnome`.
+    /// xdg-desktop-portal Screencast over `PipeWire` via `GStreamer` (GNOME, KDE).
+    /// Requires the server to be built with `--features portal`.
+    #[cfg(feature = "portal")]
     Portal,
 }
 
@@ -45,6 +46,13 @@ pub struct Cli {
     /// Command to launch (with `WAYLAND_DISPLAY` pointing to captured compositor)
     #[arg(last = true)]
     pub command: Vec<String>,
+
+    /// Open portal source-selection dialog, save restore token, then exit.
+    /// Requires `--features portal`. Run once from the desktop (not over SSH)
+    /// to authorize screen capture so later SSH sessions can skip the dialog.
+    #[cfg(feature = "portal")]
+    #[arg(long)]
+    pub select_source: bool,
 }
 
 #[cfg(test)]
@@ -75,6 +83,7 @@ mod tests {
         assert!(matches!(cli.capture, CaptureBackendArg::ExtImageCapture));
     }
 
+    #[cfg(feature = "portal")]
     #[test]
     fn capture_backend_portal() {
         let cli = Cli::parse_from(["remoteway-server", "--capture", "portal"]);

@@ -1,3 +1,9 @@
+//! RIFE neural frame interpolation backend.
+//!
+//! Wraps a RIFE v4.6+ model for high-quality optical-flow frame synthesis.
+//! Requires an external inference runtime (ncnn-rs or ONNX Runtime) and
+//! a model file on disk.
+
 use std::path::PathBuf;
 
 use crate::error::InterpolateError;

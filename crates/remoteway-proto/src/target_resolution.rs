@@ -1,3 +1,5 @@
+//! Client-requested downscaling for bandwidth-adaptive streaming.
+
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// Client → server request to produce frames at the given resolution.

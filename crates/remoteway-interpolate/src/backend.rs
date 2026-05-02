@@ -1,3 +1,8 @@
+//! Backend detection and enumeration.
+//!
+//! Defines `BackendKind` variants and `BackendDetector` for probing available
+//! interpolation backends at runtime.
+
 use crate::error::InterpolateError;
 use crate::interpolator::{FrameInterpolator, LinearBlendInterpolator};
 

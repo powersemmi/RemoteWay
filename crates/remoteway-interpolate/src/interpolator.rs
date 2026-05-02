@@ -1,3 +1,8 @@
+//! Core frame interpolation traits and CPU fallback.
+//!
+//! Defines [`FrameInterpolator`], [`GpuFrame`], and the universal
+//! [`LinearBlendInterpolator`] CPU fallback.
+
 use crate::error::InterpolateError;
 
 /// A frame in CPU memory ready for interpolation.
@@ -137,7 +142,11 @@ impl FrameInterpolator for LinearBlendInterpolator {
         // Interpolated timestamp: linear between a and b.
         // NOTE: delta (u64) to f64 conversion loses precision for very large
         // values (>2^53 ns ~ 104 days), which is irrelevant for frame timing.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss
+        )]
         let ts = if b.timestamp_ns >= a.timestamp_ns {
             let delta = b.timestamp_ns - a.timestamp_ns;
             a.timestamp_ns + (delta as f64 * f64::from(t)) as u64

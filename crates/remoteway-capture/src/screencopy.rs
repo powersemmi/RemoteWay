@@ -1,3 +1,9 @@
+//! `wlr-screencopy-v1` capture backend.
+//!
+//! Legacy screencopy protocol for wlroots-based compositors (Sway, Hyprland,
+//! niri, River). Used as a fallback when `ext-image-capture-source-v1` is
+//! unavailable.
+
 use wayland_client::protocol::{wl_buffer, wl_output, wl_registry, wl_shm, wl_shm_pool};
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
 use wayland_protocols_wlr::screencopy::v1::client::{

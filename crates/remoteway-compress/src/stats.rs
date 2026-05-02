@@ -1,3 +1,5 @@
+//! Per-frame and aggregate compression metrics collection.
+
 use std::time::{Duration, Instant};
 
 /// Per-frame compression metrics.

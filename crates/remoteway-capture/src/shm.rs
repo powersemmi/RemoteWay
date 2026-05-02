@@ -1,3 +1,8 @@
+//! Double-buffered SHM pool for zero-copy Wayland capture.
+//!
+//! Two independent `ShmSlot`s each on their own memfd + `wl_shm_pool` at
+//! offset 0, avoiding compositor bugs with non-zero pool offsets.
+
 use std::os::fd::{AsFd, OwnedFd};
 use std::ptr::NonNull;
 

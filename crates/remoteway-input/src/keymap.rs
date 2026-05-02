@@ -1,3 +1,5 @@
+//! XKB keymap handling and memfd creation for the virtual keyboard Wayland protocol.
+
 use std::io::Write;
 use std::os::fd::OwnedFd;
 

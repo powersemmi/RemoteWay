@@ -1,3 +1,5 @@
+//! Input event protocol covering pointer, keyboard, and scroll.
+
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// Pointer motion in surface-local coordinates (pixels, f32 for sub-pixel precision).

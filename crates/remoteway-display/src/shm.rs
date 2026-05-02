@@ -1,3 +1,8 @@
+//! Double-buffered shared-memory (`wl_shm`) frame uploader.
+//!
+//! Provides zero-copy pixel data uploads to Wayland surfaces with
+//! `DamageRegion` helpers for incremental damage tracking.
+
 use std::os::fd::{AsFd, OwnedFd};
 use std::ptr::NonNull;
 

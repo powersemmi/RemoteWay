@@ -1,3 +1,5 @@
+//! Universal frame header, message-type enum, and framing helpers.
+
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use crate::ProtoError;

@@ -1,3 +1,5 @@
+//! Application-level backpressure for outgoing frame chunks in the multiplexed transport.
+
 /// Application-level backpressure for outgoing frame chunks.
 ///
 /// Tracks pending bytes per stream. When adding a chunk would exceed the

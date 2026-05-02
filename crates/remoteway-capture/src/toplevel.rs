@@ -1,3 +1,8 @@
+//! Foreign toplevel tracking via `wlr-foreign-toplevel-management-v1`.
+//!
+//! Enumerates open windows on the remote compositor for per-window capture
+//! and window-list display.
+
 use wayland_client::protocol::wl_registry;
 use wayland_client::{Connection, Dispatch, QueueHandle, event_created_child};
 use wayland_protocols_wlr::foreign_toplevel::v1::client::{

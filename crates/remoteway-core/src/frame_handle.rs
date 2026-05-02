@@ -2,8 +2,11 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 pub struct FrameHandle {
+    /// Index of the owning buffer within the frame pool.
     pub pool_index: u16,
+    /// Length of the frame payload in bytes.
     pub len: u32,
+    /// Capture timestamp in nanoseconds (monotonic clock).
     pub timestamp_ns: u64,
 }
 

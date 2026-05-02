@@ -1,3 +1,5 @@
+//! Error types for screen capture.
+
 use thiserror::Error;
 
 /// Errors that can occur during screen capture.

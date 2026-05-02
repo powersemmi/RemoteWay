@@ -1,3 +1,5 @@
+//! High-priority thread for capturing input events from the local Wayland compositor.
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;

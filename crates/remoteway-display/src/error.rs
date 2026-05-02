@@ -1,3 +1,5 @@
+//! Error types for Wayland display operations.
+
 use thiserror::Error;
 
 /// Errors that can occur during display / window management.

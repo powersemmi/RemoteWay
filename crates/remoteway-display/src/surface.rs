@@ -1,3 +1,9 @@
+//! Wayland surface management and display state.
+//!
+//! Owns the `wl_compositor`, `wl_shm`, `xdg_wm_base`, and `wl_seat` globals.
+//! Provides `WaylandDisplay` for creating/destroying/managing xdg-toplevel
+//! surfaces and presenting frames with viewporter scaling.
+
 use wayland_client::protocol::{
     wl_buffer, wl_callback, wl_compositor, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
 };

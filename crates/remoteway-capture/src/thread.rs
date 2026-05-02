@@ -1,3 +1,8 @@
+//! Capture thread and SPSC frame transport.
+//!
+//! Spawns a real-time-priority thread that drives a [`CaptureBackend`] and
+//! pushes frames into an rtrb ring buffer for the compress pipeline.
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;

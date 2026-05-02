@@ -1,3 +1,5 @@
+//! Surface / buffer resize notification events.
+
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// Surface resize notification (12 bytes).

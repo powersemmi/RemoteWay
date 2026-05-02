@@ -1,3 +1,8 @@
+//! Frame buffering and interpolation manager.
+//!
+//! Maintains a sliding window of anchor/target frames and generates
+//! interpolated frames on demand. Handles anchor resets for scene changes.
+
 use crate::error::InterpolateError;
 use crate::interpolator::{FrameInterpolator, GpuFrame};
 

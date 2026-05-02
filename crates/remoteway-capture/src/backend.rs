@@ -1,3 +1,8 @@
+//! Capture backend trait and frame types.
+//!
+//! Defines [`CaptureBackend`], [`CapturedFrame`], and [`PixelFormat`] —
+//! the core abstractions that every capture protocol implements.
+
 use remoteway_compress::delta::DamageRect;
 
 use crate::error::CaptureError;

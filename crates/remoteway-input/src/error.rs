@@ -1,3 +1,5 @@
+//! Error types for input event capture and injection operations.
+
 use thiserror::Error;
 
 /// Errors that can occur during input event capture and injection.

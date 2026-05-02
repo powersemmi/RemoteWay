@@ -370,7 +370,7 @@ impl Dispatch<srv_capture_mgr::ExtImageCopyCaptureManagerV1, ()> for MockExtComp
 
 impl Dispatch<srv_session::ExtImageCopyCaptureSessionV1, ()> for MockExtCompositor {
     fn request(
-        state: &mut Self,
+        _state: &mut Self,
         _client: &Client,
         _resource: &srv_session::ExtImageCopyCaptureSessionV1,
         request: srv_session::Request,
@@ -379,7 +379,7 @@ impl Dispatch<srv_session::ExtImageCopyCaptureSessionV1, ()> for MockExtComposit
         data_init: &mut DataInit<'_, Self>,
     ) {
         if let srv_session::Request::CreateFrame { frame: id } = request {
-            let frame = data_init.init(id, ());
+            let _frame = data_init.init(id, ());
             // Frame events are sent when capture is requested (in frame dispatch).
             // But since the mock is simplified, we send events right away when the
             // frame object is created. The client will call attach_buffer, damage_buffer,
@@ -1083,7 +1083,9 @@ fn ext_backend_stop() {
     with_mock_wayland(compositor, || {
         let mut backend = ExtImageCaptureBackend::new(CaptureSource::Output(None)).unwrap();
         // Capture one frame successfully.
-        backend.next_frame().unwrap();
+        if let Err(e) = backend.next_frame() {
+            panic!("Error capturing frame: {:?}", e);
+        }
         // Stop the backend.
         backend.stop();
         // Next frame should return SessionEnded.

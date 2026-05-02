@@ -34,7 +34,7 @@ tracy-client = { workspace = true, optional = true }
 
 [features]
 tracy = ["dep:tracy-client"]
-gnome = ["remoteway-capture/gnome"]
+portal = ["remoteway-capture/portal"]
 
 [lints]
 workspace = true

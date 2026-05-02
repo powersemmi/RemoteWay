@@ -1,3 +1,8 @@
+//! Wayland output enumeration.
+//!
+//! Discovers connected displays via `wl_output` + `xdg-output-v1` and
+//! collects their geometry, refresh rate, scale, and names.
+
 use wayland_client::protocol::wl_output;
 use wayland_client::protocol::wl_registry;
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};

@@ -1,3 +1,5 @@
+//! Frame encoding/decoding and stream reassembly for the multiplexed transport protocol.
+
 use std::collections::HashMap;
 
 use remoteway_proto::ProtoError;

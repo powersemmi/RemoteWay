@@ -1,3 +1,5 @@
+//! Delta (XOR-diff) encoding of frame damage regions, with SIMD acceleration.
+
 use wide::u8x32;
 
 /// A rectangular region of a frame that changed since the previous frame.

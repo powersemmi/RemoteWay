@@ -1,3 +1,5 @@
+//! SSH transport layer with async read/write loops and priority-based frame sending.
+
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, watch};
 

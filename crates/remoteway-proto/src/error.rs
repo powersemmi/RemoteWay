@@ -1,3 +1,5 @@
+//! Error types for the protocol layer.
+
 use thiserror::Error;
 
 /// Errors originating from the protocol layer (message decoding,

@@ -1,4 +1,9 @@
-use tracing::warn;
+//! `ext-image-capture-source-v1` / `ext-image-copy-capture-v1` backend.
+//!
+//! Modern Wayland screen capture protocol. Supports output capture, toplevel
+//! (per-window) capture, and toplevel discovery via `ext-foreign-toplevel-list-v1`.
+
+use tracing::{info, trace, warn};
 use wayland_client::protocol::{wl_buffer, wl_output, wl_registry, wl_shm, wl_shm_pool};
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
 
@@ -460,6 +465,14 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ExtCaptureState {
             version,
         } = event
         {
+            eprintln!("WAYLAND GLOBAL: name={name} interface={interface} version={version}");
+            trace!(%name, %interface, %version, "wayland global");
+            if interface.starts_with("ext_")
+                || interface.starts_with("wlr_")
+                || interface.starts_with("zwlr_")
+            {
+                info!(%name, %interface, %version, "relevant wayland global");
+            }
             match interface.as_str() {
                 "wl_shm" => {
                     state.shm = Some(registry.bind(name, version.min(1), qh, ()));

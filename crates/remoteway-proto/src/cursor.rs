@@ -1,3 +1,5 @@
+//! Cursor position updates and cursor-image metadata.
+
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// Cursor position and hotspot update (no bitmap — just movement).

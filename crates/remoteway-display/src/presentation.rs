@@ -1,3 +1,8 @@
+//! Presentation-time feedback via `wp_presentation_time`.
+//!
+//! Tracks frame presentation timestamps and estimates the display refresh
+//! interval using an exponential moving average.
+
 use wayland_client::protocol::wl_surface;
 use wayland_client::{Connection, Dispatch, QueueHandle};
 use wayland_protocols::wp::presentation_time::client::{wp_presentation, wp_presentation_feedback};

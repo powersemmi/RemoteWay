@@ -1,3 +1,5 @@
+//! Unified encode/decode pipeline orchestrating delta + compression stages.
+
 use crate::delta::{DamageRect, delta_decode, delta_encode_simd};
 use crate::lz4::{CompressError, compress_region, decompress_region};
 use crate::stats::{FrameStats, StageTimer};

@@ -1,3 +1,5 @@
+//! Frame metadata, damage regions, and wire-area descriptors.
+
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// Frame payload wire header: dimensions + number of damage regions.

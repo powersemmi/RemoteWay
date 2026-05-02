@@ -1,3 +1,8 @@
+//! Pluggable interpolation backend implementations.
+//!
+//! Each backend is behind a feature gate and provides a concrete
+//! [`FrameInterpolator`](crate::interpolator::FrameInterpolator).
+
 #[cfg(feature = "wgpu-backend")]
 pub mod wgpu_optical_flow;
 

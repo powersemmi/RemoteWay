@@ -24,14 +24,18 @@ wayland-backend.workspace = true
 bitflags.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
-zbus = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
-pipewire = { workspace = true, optional = true }
+libc.workspace = true
+
+# Portal + GStreamer capture (for GNOME/KDE)
+ashpd = { workspace = true, optional = true }
+gstreamer = { workspace = true, optional = true }
+gstreamer-app = { workspace = true, optional = true }
+gstreamer-video = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 
 [features]
-gnome = ["dep:zbus", "dep:serde", "dep:pipewire", "dep:tokio", "dep:futures-util"]
+portal = ["dep:ashpd", "dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "dep:tokio", "dep:futures-util"]
 
 [dev-dependencies]
 wayland-server.workspace = true

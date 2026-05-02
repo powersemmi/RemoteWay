@@ -67,11 +67,16 @@ mimalloc = "0.1"
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
 
-# Serde / portal
 serde = "1"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
-pipewire = "0.9"
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "screencast"] }
+
 bitflags = "2"
+
+# GStreamer (for portal capture)
+gstreamer = "0.25"
+gstreamer-app = "0.25"
+gstreamer-video = "0.25"
 
 # Interpolation
 wgpu = "24"
@@ -81,6 +86,9 @@ ash = "0.38"
 # Input
 reis = "0.6"
 
+# Serialization
+serde_json = "1"
+
 # Fuzz
 libfuzzer-sys = "0.4"
 
@@ -88,28 +96,17 @@ libfuzzer-sys = "0.4"
 
 [workspace.lints.rust]
 unsafe_code = "allow"
-missing_docs = "allow"
-unused_results = "warn"
+missing_docs = "warn"
+unused_results = "allow"
 unused_qualifications = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
 
 [workspace.lints.clippy]
-# Correctness — always errors
 correctness = { level = "deny", priority = -1 }
-
-# Suspicious — always errors
 suspicious = { level = "deny", priority = -1 }
-
-# Style — warnings
 style = { level = "warn", priority = -1 }
-
-# Complexity — warnings
 complexity = { level = "warn", priority = -1 }
-
-# Perf — warnings
 perf = { level = "warn", priority = -1 }
-
-# Selective restriction lints
 unwrap_used = "allow"
 expect_used = "warn"
 dbg_macro = "warn"

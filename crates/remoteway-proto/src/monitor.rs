@@ -1,3 +1,5 @@
+//! Monitor descriptors, EDID information, and fractional-scale hints.
+
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// Monitor information sent during handshake (fixed-size header, 24 bytes).

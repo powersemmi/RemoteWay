@@ -87,8 +87,7 @@ pub fn create_capture_backend(
     output: Option<&str>,
     app_id: Option<&str>,
 ) -> Result<Box<dyn CaptureBackend>> {
-    // Per-window capture path: ext-image-capture supports toplevel capture
-    // natively; portal supports it via PortalSourceType::Window.
+    // Per-window capture path: ext-image-capture supports toplevel capture natively.
     if let Some(app_id) = app_id {
         return match capture_arg {
             CaptureBackendArg::WlrScreencopy => {
@@ -97,28 +96,15 @@ pub fn create_capture_backend(
                      wlr-screencopy does not support per-window capture"
                 );
             }
-            CaptureBackendArg::Auto => {
-                // Try ext-image-capture first (no dialog, stable).
-                // Fall back to portal per-window if available.
-                match remoteway_capture::detect::detect_toplevel_backend(app_id) {
-                    Ok(backend) => return Ok(backend),
-                    Err(e) => {
-                        tracing::info!(
-                            "ext-image-capture per-window unavailable for '{app_id}': {e}"
-                        );
-                        try_portal_window().context(format!(
-                            "failed to capture toplevel '{app_id}' \
-                             (ext-image-capture and portal both unavailable)"
-                        ))
-                    }
-                }
+            #[cfg(feature = "portal")]
+            CaptureBackendArg::Portal => {
+                return remoteway_capture::portal::PortalBackend::new()
+                    .map(|b| Box::new(b) as Box<dyn CaptureBackend>)
+                    .context("failed to create portal capture backend (window)");
             }
-            CaptureBackendArg::ExtImageCapture => {
+            CaptureBackendArg::Auto | CaptureBackendArg::ExtImageCapture => {
                 remoteway_capture::detect::detect_toplevel_backend(app_id)
                     .context(format!("failed to capture toplevel '{app_id}'"))
-            }
-            CaptureBackendArg::Portal => {
-                try_portal_window().context("failed to create portal capture backend (window)")
             }
         };
     }
@@ -139,9 +125,10 @@ pub fn create_capture_backend(
                 .map(|b| Box::new(b) as Box<dyn CaptureBackend>)
                 .context("failed to create ext-image-capture backend")
         }
-        CaptureBackendArg::Portal => {
-            try_portal_monitor().context("failed to create portal capture backend")
-        }
+        #[cfg(feature = "portal")]
+        CaptureBackendArg::Portal => remoteway_capture::portal::PortalBackend::new()
+            .map(|b| Box::new(b) as Box<dyn CaptureBackend>)
+            .context("failed to create portal capture backend"),
     }
 }
 
@@ -156,58 +143,17 @@ pub fn create_capture_backend_for_child(
         CaptureBackendArg::WlrScreencopy => {
             anyhow::bail!(
                 "per-window capture requires ext-image-capture or portal backend; \
-                 wlr-screencopy does not support it"
+                                 wlr-screencopy does not support it"
             );
         }
+        #[cfg(feature = "portal")]
+        CaptureBackendArg::Portal => remoteway_capture::portal::PortalBackend::new()
+            .map(|b| Box::new(b) as Box<dyn CaptureBackend>)
+            .context("failed to create portal capture backend (window)"),
         CaptureBackendArg::Auto | CaptureBackendArg::ExtImageCapture => {
             remoteway_capture::detect::detect_new_toplevel_backend(known_identifiers)
                 .context("failed to detect child window")
         }
-        CaptureBackendArg::Portal => {
-            // Portal cannot diff against `known_identifiers` (the picker dialog
-            // shows the user the full window list). The user picks the new
-            // window manually. known_identifiers is dropped naturally here.
-            try_portal_window().context("failed to create portal capture backend (window)")
-        }
-    }
-}
-
-/// Try portal-based capture with the given source type.
-///
-/// Only available when `gnome` feature is enabled.
-#[cfg(feature = "gnome")]
-fn try_portal_capture(
-    source_type: remoteway_capture::portal::PortalSourceType,
-) -> Result<Box<dyn CaptureBackend>> {
-    remoteway_capture::detect::create_portal_backend(source_type)
-        .context("portal capture unavailable")
-}
-
-/// Open a portal screencast session for a full monitor.
-///
-/// Cfg-safe wrapper: callable from code that compiles without `--features gnome`.
-/// Returns a clear error at runtime when the feature isn't built in.
-pub fn try_portal_monitor() -> Result<Box<dyn CaptureBackend>> {
-    #[cfg(feature = "gnome")]
-    {
-        try_portal_capture(remoteway_capture::portal::PortalSourceType::Monitor)
-    }
-    #[cfg(not(feature = "gnome"))]
-    {
-        anyhow::bail!("portal capture requires 'gnome' feature")
-    }
-}
-
-/// Open a portal screencast session for a single window (user picks via the
-/// portal dialog).
-pub fn try_portal_window() -> Result<Box<dyn CaptureBackend>> {
-    #[cfg(feature = "gnome")]
-    {
-        try_portal_capture(remoteway_capture::portal::PortalSourceType::Window)
-    }
-    #[cfg(not(feature = "gnome"))]
-    {
-        anyhow::bail!("portal capture requires 'gnome' feature")
     }
 }
 
@@ -221,6 +167,7 @@ pub fn build_handshake(capture_arg: &CaptureBackendArg, compress_arg: &CompressA
         }
         CaptureBackendArg::WlrScreencopy => capture_flags::WLR_SCREENCOPY,
         CaptureBackendArg::ExtImageCapture => capture_flags::EXT_IMAGE_CAPTURE,
+        #[cfg(feature = "portal")]
         CaptureBackendArg::Portal => capture_flags::PORTAL,
     };
 
@@ -663,14 +610,6 @@ mod tests {
     }
 
     #[test]
-    fn build_handshake_portal() {
-        let data = build_handshake(&CaptureBackendArg::Portal, &CompressArg::Lz4);
-        use remoteway_proto::handshake::{HandshakePayload, capture_flags};
-        let hs = HandshakePayload::ref_from_bytes(&data[16..24]).unwrap();
-        assert_eq!({ hs.capture_flags }, capture_flags::PORTAL);
-    }
-
-    #[test]
     fn pack_unpack_round_trip() {
         assert_eq!(
             unpack_resolution(pack_resolution(1920, 1080)),
@@ -749,28 +688,6 @@ mod tests {
         assert_eq!(dst.len(), (dw * dh * 4) as usize);
         // All pixels should be 128 since source is uniform.
         assert!(dst.iter().all(|&b| b == 128));
-    }
-
-    #[test]
-    fn try_portal_monitor_no_gnome_feature() {
-        #[cfg(not(feature = "gnome"))]
-        {
-            let result = try_portal_monitor();
-            assert!(result.is_err());
-            let msg = format!("{}", result.err().unwrap());
-            assert!(msg.contains("gnome"), "error should mention 'gnome': {msg}");
-        }
-    }
-
-    #[test]
-    fn try_portal_window_no_gnome_feature() {
-        #[cfg(not(feature = "gnome"))]
-        {
-            let result = try_portal_window();
-            assert!(result.is_err());
-            let msg = format!("{}", result.err().unwrap());
-            assert!(msg.contains("gnome"), "error should mention 'gnome': {msg}");
-        }
     }
 
     #[test]

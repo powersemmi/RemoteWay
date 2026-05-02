@@ -15,10 +15,10 @@ pub enum CaptureBackendArg {
     Auto,
     /// wlr-screencopy-unstable-v1 (Hyprland, Sway, wlroots).
     WlrScreencopy,
-    /// ext-image-capture-source-v1 (newer standard).
+    /// ext-image-capture-source-v1 (modern Wayland protocol).
     ExtImageCapture,
-    /// xdg-desktop-portal Screencast over `PipeWire`.
-    /// Server must be built with `--features gnome`.
+    /// xdg-desktop-portal Screencast over `PipeWire` via `GStreamer`.
+    /// Server must be built with `--features portal`.
     Portal,
 }
 

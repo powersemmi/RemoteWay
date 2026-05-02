@@ -1,3 +1,5 @@
+//! Wayland input capture — intercepts pointer and keyboard events on the client side.
+
 use wayland_client::protocol::{wl_keyboard, wl_pointer, wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
 

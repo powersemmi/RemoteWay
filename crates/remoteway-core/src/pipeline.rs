@@ -2,6 +2,7 @@ use crate::frame_handle::FrameHandle;
 
 /// Common interface for a synchronous pipeline stage.
 pub trait PipelineStage: Send + Sync {
+    /// Process a [`FrameHandle`] through this pipeline stage, returning the transformed handle.
     fn process(&self, input: FrameHandle) -> FrameHandle;
 }
 

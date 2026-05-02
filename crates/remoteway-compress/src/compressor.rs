@@ -1,3 +1,5 @@
+//! Compression backend abstraction — LZ4 and optional zstd support.
+
 use thiserror::Error;
 
 use crate::lz4::{self, compress_region as lz4_compress, decompress_region as lz4_decompress};

@@ -28,17 +28,12 @@
 //! | [`error`] | [`CaptureError`](error::CaptureError) error type and related helpers. |
 //! | [`ext_capture`] | Backend using the `ext-image-capture-source-v1` Wayland protocol. |
 //! | [`output`] | Wayland output enumeration (identifying displays / monitors). |
-//! | [`pipewire_capture`] | PipeWire-based capture backend (available behind the `gnome` feature gate). |
-//! | [`portal`] | xdg-desktop-portal integration for requesting screen content (available behind the `gnome` feature gate). |
+//! | [`portal`] | GStreamer + xdg-desktop-portal backend for GNOME/KDE. |
 //! | [`protocols`] | Auto-generated Wayland protocol bindings (internal; not public API). |
 //! | [`screencopy`] | Backend using the legacy `wlr-screencopy` protocol. |
 //! | [`shm`] | Double-buffered shared-memory (SHM) pool for zero-copy frame storage. |
 //! | [`thread`] | Capture thread and SPSC ring-buffer transport. |
 //! | [`toplevel`] | Foreign toplevel tracking for per-window capture. |
-//!
-//! # Feature flags
-//!
-//! * `gnome` — enables GNOME-specific backends: [`pipewire_capture`] and [`portal`].
 //!
 //! [RemoteWay]: https://github.com/RemoteWay/RemoteWay
 
@@ -48,9 +43,7 @@ pub mod detect;
 pub mod error;
 pub mod ext_capture;
 pub mod output;
-#[cfg(feature = "gnome")]
-pub mod pipewire_capture;
-#[cfg(feature = "gnome")]
+#[cfg(feature = "portal")]
 pub mod portal;
 mod protocols;
 pub mod screencopy;

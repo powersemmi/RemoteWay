@@ -1,3 +1,8 @@
+//! Auto-detection of the best available capture backend.
+//!
+//! Probes Wayland protocols in priority order: `ext-image-capture-source-v1`,
+//! xdg-desktop-portal + `GStreamer`, and `wlr-screencopy`.
+
 use wayland_client::Connection;
 
 use crate::backend::CaptureBackend;
@@ -5,48 +10,21 @@ use crate::desktop_detect::detect_desktop;
 use crate::error::CaptureError;
 use crate::ext_capture::{CaptureSource, ExtImageCaptureBackend};
 pub use crate::ext_capture::{ToplevelInfo, enumerate_toplevels};
+#[cfg(feature = "portal")]
+use crate::portal::PortalBackend;
 use crate::screencopy::WlrScreencopyBackend;
 
 /// Auto-detect the best available capture backend.
 ///
-/// Order:
-/// - GNOME/KDE: portal first (their native path), then wlr fallbacks.
-/// - wlroots (sway/niri/Hyprland): ext-image-capture → wlr-screencopy →
-///   portal as last resort. wlr-screencopy must come before portal because
-///   portal/PipeWire on wlroots routinely fails at runtime due to DMA-BUF
-///   modifier negotiation (compositor produces tiled DMA-BUF, we cannot
-///   negotiate LINEAR), even when backend creation succeeds.
+/// Priority order:
+/// 1. `ext-image-capture-source-v1` — modern protocol (GNOME 46+, KDE 6+, wlroots 0.18+)
+/// 2. Portal + `GStreamer` — xdg-desktop-portal (GNOME, KDE)
+/// 3. `wlr-screencopy` — legacy protocol, tried as last-resort fallback for all DEs
 pub fn detect_backend(output_name: Option<&str>) -> Result<Box<dyn CaptureBackend>, CaptureError> {
     let desktop = detect_desktop();
     tracing::info!(desktop = %desktop, "detected desktop environment");
 
-    // On GNOME/KDE, portal is the primary path.
-    #[cfg(feature = "gnome")]
-    if desktop.needs_portal() {
-        tracing::info!("attempting portal/PipeWire capture for {desktop}");
-        match create_portal_backend(crate::portal::PortalSourceType::Monitor) {
-            Ok(backend) => return Ok(backend),
-            Err(e) => {
-                tracing::warn!(
-                    "portal capture failed: {e}. \
-                     On GNOME/KDE the portal shows a dialog — make sure to \
-                     click 'Share' on the remote machine's display, or run \
-                     `gsettings set org.gnome.desktop.remote-desktop.remote-control enable true` \
-                     on GNOME to pre-authorize."
-                );
-            }
-        }
-    }
-
-    #[cfg(not(feature = "gnome"))]
-    if desktop.needs_portal() {
-        tracing::warn!(
-            "desktop {desktop} requires portal capture, but 'gnome' feature is not enabled; \
-             falling back to wlr protocols"
-        );
-    }
-
-    // ext-image-capture (modern, preferred when available).
+    // 1. ext-image-capture — modern standard Wayland protocol.
     let source = CaptureSource::Output(output_name.map(String::from));
     match ExtImageCaptureBackend::new(source) {
         Ok(backend) => {
@@ -58,64 +36,70 @@ pub fn detect_backend(output_name: Option<&str>) -> Result<Box<dyn CaptureBacken
         }
     }
 
-    // wlr-screencopy (sway, niri, Hyprland and other wlroots-based).
-    match WlrScreencopyBackend::new(output_name) {
-        Ok(backend) => {
-            tracing::info!("using wlr-screencopy backend");
-            return Ok(Box::new(backend));
-        }
-        Err(e) => {
-            tracing::info!("wlr-screencopy unavailable: {e}");
-        }
-    }
-
-    // Portal as a last resort for any compositor where wlr protocols
-    // are unavailable (GNOME/KDE may also reach here if the first portal
-    // attempt timed out due to an unconfirmed dialog).
-    #[cfg(feature = "gnome")]
+    // 2. portal + GStreamer — GNOME/KDE via xdg-desktop-portal.
+    #[cfg(feature = "portal")]
     {
-        tracing::info!("trying portal capture as last resort for {desktop}");
-        match create_portal_backend(crate::portal::PortalSourceType::Monitor) {
-            Ok(backend) => return Ok(backend),
+        let mut portal_error: Option<CaptureError> = None;
+        if desktop.needs_portal() {
+            match PortalBackend::new() {
+                Ok(backend) => {
+                    tracing::info!("using portal + GStreamer backend");
+                    return Ok(Box::new(backend));
+                }
+                Err(e) => {
+                    tracing::info!("portal backend unavailable: {e}");
+                    portal_error = Some(e);
+                }
+            }
+        }
+
+        // 3. wlr-screencopy — try for ALL desktops as last-resort fallback.
+        //    Some KDE setups lack gst-plugin-pipewire but support wlr-screencopy.
+        match WlrScreencopyBackend::new(output_name) {
+            Ok(backend) => {
+                tracing::info!("using wlr-screencopy backend (portal fallback)");
+                return Ok(Box::new(backend));
+            }
             Err(e) => {
-                tracing::info!("portal fallback unavailable: {e}");
+                tracing::info!("wlr-screencopy unavailable: {e}");
+                // If portal was our primary path and it failed with pipewiresrc,
+                // surface a specific actionable error.
+                if let Some(ref pe) = portal_error {
+                    if format!("{pe}").contains("pipewiresrc") {
+                        tracing::error!(
+                            "portal capture failed: `pipewiresrc` GStreamer element not found. \
+                             Install the PipeWire GStreamer plugin:\n  \
+                             Debian/Ubuntu:  sudo apt install gstreamer1.0-pipewire\n  \
+                             Fedora:         sudo dnf install gstreamer1-plugin-pipewire\n  \
+                             Arch:           sudo pacman -S gst-plugin-pipewire"
+                        );
+                    }
+                }
             }
         }
     }
 
+    // No portal feature — try wlr-screencopy directly.
+    #[cfg(not(feature = "portal"))]
+    {
+        match WlrScreencopyBackend::new(output_name) {
+            Ok(backend) => {
+                tracing::info!("using wlr-screencopy backend");
+                return Ok(Box::new(backend));
+            }
+            Err(e) => {
+                tracing::info!("wlr-screencopy unavailable: {e}");
+            }
+        }
+    }
+
+    tracing::error!(
+        "no capture backend available for {desktop}. \
+         ext-image-capture-source-v1 requires GNOME 46+ / KDE 6+ / wlroots 0.18+. \
+         Portal + PipeWire requires the GStreamer PipeWire plugin. \
+         On older compositors, upgrade or install missing packages."
+    );
     Err(CaptureError::NoBackend)
-}
-
-/// Create a portal-based `PipeWire` capture backend with the given source type.
-///
-/// On GNOME/KDE this is the primary capture path. On other compositors (niri, etc.)
-/// it serves as a fallback when ext-image-capture is unavailable.
-///
-/// Portal setup requires a tokio runtime for D-Bus calls. To avoid "cannot start
-/// a runtime from within a runtime" panics when called from an async context,
-/// the runtime is created on a dedicated thread.
-#[cfg(feature = "gnome")]
-pub fn create_portal_backend(
-    source_type: crate::portal::PortalSourceType,
-) -> Result<Box<dyn CaptureBackend>, CaptureError> {
-    use crate::pipewire_capture::PipeWireCaptureBackend;
-    use crate::portal::create_screencast_session;
-
-    // Spawn a dedicated thread for the tokio runtime to avoid nested-runtime panics
-    // when called from within an existing async context (e.g. server's main tokio runtime).
-    let session = std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| CaptureError::Protocol(format!("tokio runtime failed: {e}")))?;
-
-        rt.block_on(create_screencast_session(source_type, true))
-    })
-    .join()
-    .map_err(|_| CaptureError::Protocol("portal thread panicked".into()))??;
-
-    let backend = PipeWireCaptureBackend::new(&session)?;
-    Ok(Box::new(backend))
 }
 
 /// Detect backend for capturing a specific toplevel window.
@@ -188,15 +172,6 @@ mod tests {
     }
 
     #[test]
-    fn enumerate_toplevels_without_wayland_returns_error() {
-        if std::env::var("WAYLAND_DISPLAY").is_ok() {
-            return;
-        }
-        let result = enumerate_toplevels();
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn detect_backend_with_named_output_without_wayland() {
         if std::env::var("WAYLAND_DISPLAY").is_ok() {
             return;
@@ -210,7 +185,6 @@ mod tests {
         if std::env::var("WAYLAND_DISPLAY").is_ok() {
             return;
         }
-        // Various app_id formats should all fail without Wayland
         for app_id in &["org.mozilla.firefox", "com.google.Chrome", "kitty", ""] {
             let result = detect_toplevel_backend(app_id);
             assert!(result.is_err(), "expected error for app_id: {app_id}");
@@ -232,7 +206,6 @@ mod tests {
         if std::env::var("WAYLAND_DISPLAY").is_ok() {
             return;
         }
-        // Without Wayland, should consistently return false
         let r1 = is_capture_available();
         let r2 = is_capture_available();
         assert_eq!(r1, r2);

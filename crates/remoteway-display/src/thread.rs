@@ -1,3 +1,9 @@
+//! Display thread and frame transport.
+//!
+//! Runs a dedicated thread for presenting frames to Wayland surfaces via
+//! an SPSC ring buffer. Handles frame timing, damage batching, and graceful
+//! shutdown.
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;

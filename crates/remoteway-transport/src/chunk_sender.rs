@@ -1,3 +1,5 @@
+//! Splits payloads into fixed-size chunks for transmission over the multiplexed protocol.
+
 use remoteway_proto::header::{FrameHeader, MsgType, flags};
 use zerocopy::IntoBytes;
 

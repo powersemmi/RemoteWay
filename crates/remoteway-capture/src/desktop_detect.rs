@@ -1,9 +1,14 @@
+//! Desktop environment detection.
+//!
+//! Identifies the running compositor (GNOME, KDE, wlroots, …) via
+//! environment variables, process scanning, and logind heuristics.
+
 /// Detected desktop environment type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopEnvironment {
-    /// GNOME — uses xdg-desktop-portal + `PipeWire` for capture, libei for input.
+    /// GNOME — uses `ext-image-capture-source-v1` for capture, libei for input.
     Gnome,
-    /// KDE Plasma — uses xdg-desktop-portal + `PipeWire`.
+    /// KDE Plasma — uses `ext-image-capture-source-v1` for capture.
     Kde,
     /// wlroots-based (Sway, Hyprland, etc.) — uses wlr-screencopy / ext-image-capture.
     Wlroots,
@@ -124,6 +129,9 @@ fn detect_from_env(
 ///
 /// Returns `true` if `WAYLAND_DISPLAY` is available after discovery.
 pub fn ensure_wayland_env() -> bool {
+    // Always try to inherit D-Bus env — needed for portal backend over SSH.
+    try_inherit_dbus_env();
+
     if std::env::var("WAYLAND_DISPLAY").is_ok() {
         return true;
     }
@@ -144,6 +152,77 @@ pub fn ensure_wayland_env() -> bool {
     }
 
     false
+}
+
+/// Ensure `DBUS_SESSION_BUS_ADDRESS` is available by inheriting it from the
+/// compositor process or by probing `$XDG_RUNTIME_DIR/bus`.
+pub fn try_inherit_dbus_env() {
+    if std::env::var("DBUS_SESSION_BUS_ADDRESS").is_ok() {
+        return;
+    }
+
+    // Try compositor /proc/environ first.
+    inherit_dbus_from_compositor();
+    if std::env::var("DBUS_SESSION_BUS_ADDRESS").is_ok() {
+        return;
+    }
+
+    // Fallback: probe $XDG_RUNTIME_DIR/bus (standard D-Bus session socket).
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        let bus_path = std::path::Path::new(&runtime_dir).join("bus");
+        if bus_path.exists() {
+            let addr = format!("unix:path={}", bus_path.display());
+            // SAFETY: called before pipeline threads are spawned.
+            unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", &addr) };
+            tracing::info!(dbus_addr = %addr, "discovered dbus socket in runtime dir");
+        }
+    }
+}
+
+/// Scan compositor processes for `DBUS_SESSION_BUS_ADDRESS` and set it.
+fn inherit_dbus_from_compositor() {
+    let entries = match std::fs::read_dir("/proc") {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !name_str.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+
+        let comm_path = entry.path().join("comm");
+        let Ok(comm) = std::fs::read_to_string(&comm_path) else {
+            continue;
+        };
+        let comm = comm.trim();
+
+        if !COMPOSITOR_PROCESSES
+            .iter()
+            .any(|&(proc_name, _)| comm == proc_name)
+        {
+            continue;
+        }
+
+        let environ_path = entry.path().join("environ");
+        let Ok(environ_raw) = std::fs::read(&environ_path) else {
+            continue;
+        };
+
+        for var_bytes in environ_raw.split(|&b| b == 0) {
+            let Ok(s) = std::str::from_utf8(var_bytes) else {
+                continue;
+            };
+            if let Some(val) = s.strip_prefix("DBUS_SESSION_BUS_ADDRESS=") {
+                // SAFETY: called before pipeline threads are spawned.
+                unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", val) };
+                tracing::info!(dbus_addr = %val, "inherited dbus address from compositor process");
+                return;
+            }
+        }
+    }
 }
 
 /// Read `WAYLAND_DISPLAY` and `XDG_RUNTIME_DIR` from a running compositor's
@@ -181,6 +260,7 @@ fn inherit_compositor_env() -> bool {
 
         let mut wayland_display = None;
         let mut xdg_runtime_dir = None;
+        let mut dbus_address = None;
 
         for var_bytes in environ_raw.split(|&b| b == 0) {
             let Ok(s) = std::str::from_utf8(var_bytes) else {
@@ -190,6 +270,8 @@ fn inherit_compositor_env() -> bool {
                 wayland_display = Some(val.to_string());
             } else if let Some(val) = s.strip_prefix("XDG_RUNTIME_DIR=") {
                 xdg_runtime_dir = Some(val.to_string());
+            } else if let Some(val) = s.strip_prefix("DBUS_SESSION_BUS_ADDRESS=") {
+                dbus_address = Some(val.to_string());
             }
         }
 
@@ -205,6 +287,15 @@ fn inherit_compositor_env() -> bool {
                 unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime_dir) };
                 tracing::info!(xdg_runtime_dir = %runtime_dir, "inherited from compositor process");
             }
+
+            if let Some(ref addr) = dbus_address
+                && std::env::var("DBUS_SESSION_BUS_ADDRESS").is_err()
+            {
+                // SAFETY: called before pipeline threads are spawned.
+                unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", addr) };
+                tracing::info!(dbus_addr = %addr, "inherited dbus address from compositor process");
+            }
+
             return true;
         }
     }

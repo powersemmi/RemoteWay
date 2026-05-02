@@ -1,3 +1,5 @@
+//! Clipboard transfer protocol — copy/paste between hosts.
+
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// Clipboard transfer header (8 bytes), followed by variable-length data.

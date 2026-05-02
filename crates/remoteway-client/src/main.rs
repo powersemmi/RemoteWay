@@ -1,3 +1,9 @@
+//! `RemoteWay` client binary: SSH transport, decompression, display, and input capture.
+//!
+//! Launches remoteway-server on the remote host via SSH, receives compressed
+//! frames over stdin/stdout, decompresses and displays them using Wayland SHM
+//! buffers, and captures local input events to forward to the server.
+
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

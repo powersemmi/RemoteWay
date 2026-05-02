@@ -1,3 +1,5 @@
+//! Connection handshake with capability negotiation.
+
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// Capture backend flags (bitmask).

@@ -1,414 +1,620 @@
-//! xdg-desktop-portal Screencast integration via D-Bus (zbus).
+//! Portal + `GStreamer` capture backend for GNOME / KDE.
 //!
-//! Portal methods use the Request/Response pattern: each method call returns
-//! a Request object path, and the actual result arrives as a `Response` signal
-//! on that path. This module handles the full async handshake correctly.
-//!
-//! Requires the `gnome` feature flag.
+//! Uses [`ashpd`] (high-level D-Bus portal API) for the portal handshake
+//! (`CreateSession` → `SelectSources` → `Start`) and a `GStreamer` pipeline
+//! to capture frames from a `PipeWire` stream.
 
-use std::collections::HashMap;
+use std::os::unix::io::{AsRawFd, OwnedFd};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use futures_util::StreamExt;
-use zbus::Connection;
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+use ashpd::desktop::screencast::{
+    CursorMode, Screencast, SelectSourcesOptions, SourceType, StartCastOptions,
+};
+use gstreamer::prelude::*;
+use remoteway_compress::delta::DamageRect;
+use tokio::sync::mpsc;
+use tracing::{debug, error, info, trace, warn};
 
+use crate::backend::{CaptureBackend, CapturedFrame, PixelFormat};
 use crate::error::CaptureError;
 
-/// Path to the file where we persist the portal session identifier.
-/// The identifier allows restoring a previously authorized session
-/// without showing the portal dialog on subsequent runs.
-const PORTAL_ID_FILE: &str = "remoteway/portal-id";
+// ---------------------------------------------------------------------------
+// Token persistence
+// ---------------------------------------------------------------------------
 
-/// Return the path to the portal identifier file.
-fn portal_id_path() -> PathBuf {
-    // Try XDG_CONFIG_HOME first, fall back to ~/.config
-    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
-        PathBuf::from(dir).join(PORTAL_ID_FILE)
-    } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".config").join(PORTAL_ID_FILE)
+/// Directory name under `XDG_CACHE_HOME` (or `~/.cache`) for the restore token.
+const TOKEN_DIR: &str = "remoteway";
+/// File name for the portal restore token.
+const TOKEN_FILE: &str = "portal-token";
+
+/// Returns the full path to the portal restore token file.
+///
+/// Uses `XDG_CACHE_HOME` if set, otherwise falls back to `~/.cache`.
+fn token_path() -> PathBuf {
+    let base = std::env::var("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            PathBuf::from(home).join(".cache")
+        });
+    base.join(TOKEN_DIR).join(TOKEN_FILE)
+}
+
+/// Reads the persisted portal restore token from disk.
+///
+/// Returns `None` if the file doesn't exist or is empty.
+fn load_restore_token() -> Option<String> {
+    let content = std::fs::read_to_string(token_path()).ok()?;
+    let trimmed = content.trim().to_string();
+    if trimmed.is_empty() {
+        None
     } else {
-        PathBuf::from(PORTAL_ID_FILE)
+        Some(trimmed)
     }
 }
 
-/// Load a previously saved portal session identifier.
-fn load_portal_id() -> Option<String> {
-    let path = portal_id_path();
-    match std::fs::read_to_string(&path) {
-        Ok(s) => {
-            let trimmed = s.trim().to_string();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            }
-        }
-        Err(e) => {
-            tracing::debug!(err = %e, path = %path.to_string_lossy(), "no saved portal id found");
-            None
-        }
-    }
-}
-
-/// Save a portal session identifier for future use.
-fn save_portal_id(identifier: &str) {
-    let path = portal_id_path();
-    let path_str = path.to_string_lossy();
+/// Persists the portal restore token to disk for future sessions.
+///
+/// Creates the parent directory if needed. Logs a warning on failure
+/// but never panics — token persistence is best-effort.
+fn save_restore_token(token: &str) {
+    let path = token_path();
     if let Some(parent) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(parent) {
-            tracing::warn!(err = %e, "failed to create portal id directory");
-        }
-    if let Err(e) = std::fs::write(&path, identifier) {
-        tracing::warn!(err = %e, path = %path_str, "failed to save portal identifier");
-    } else {
-        tracing::info!(%identifier, "portal identifier saved for skip-dialog on next run");
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        warn!(%e, path = %parent.display(), "failed to create token directory");
+        return;
+    }
+    if let Err(e) = std::fs::write(&path, token) {
+        warn!(%e, "failed to save portal restore token");
     }
 }
 
-/// Result of a successful portal screencast session.
-pub struct PortalSession {
-    /// `PipeWire` file descriptor for connecting to the `PipeWire` daemon.
-    pub pw_fd: std::os::fd::OwnedFd,
-    /// `PipeWire` node ID of the screencast stream.
-    pub pw_node_id: u32,
-    /// Stream size reported by the portal (may be used as fallback).
-    pub stream_width: u32,
-    pub stream_height: u32,
-    /// Session handle (D-Bus object path) for cleanup.
-    pub session_handle: OwnedObjectPath,
-    /// Portal session identifier for restoring this session without a dialog
-    /// on subsequent runs. Saved to disk for reuse across invocations.
-    pub portal_id: Option<String>,
+// ---------------------------------------------------------------------------
+// PortalBackend – public API
+// ---------------------------------------------------------------------------
+
+/// Portal + `GStreamer` capture backend.
+pub struct PortalBackend {
+    frame_rx: mpsc::Receiver<CapturedFrame>,
+    stop_flag: Arc<AtomicBool>,
 }
 
-/// Whether to capture a monitor, a specific window, or show both options.
-#[derive(Debug, Clone, Copy)]
-pub enum PortalSourceType {
-    Monitor,
-    Window,
-    /// Show both monitors and windows in the portal picker (types=3).
-    Both,
-}
+impl PortalBackend {
+    /// Initialize the portal + `GStreamer` capture pipeline.
+    ///
+    /// Spawns a dedicated OS thread with a Tokio `current_thread` runtime for
+    /// the D-Bus portal handshake. Once the session is established, a `GStreamer`
+    /// pipeline consumes the `PipeWire` stream and forwards frames through an
+    /// internal MPSC channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if D-Bus / portal / `PipeWire` / `GStreamer` is unavailable.
+    pub fn new() -> Result<Self, CaptureError> {
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), CaptureError>>();
+        let (frame_tx, frame_rx) = mpsc::channel(16);
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let stop_flag_clone = stop_flag.clone();
 
-/// Create a screencast session via xdg-desktop-portal.
-///
-/// This is an async function that must be called from a tokio context.
-pub async fn create_screencast_session(
-    source_type: PortalSourceType,
-    _embed_cursor: bool,
-) -> Result<PortalSession, CaptureError> {
-    let connection = Connection::session()
-        .await
-        .map_err(|e| CaptureError::Protocol(format!("D-Bus session connection failed: {e}")))?;
-
-    // 1. CreateSession
-    let mut create_opts: HashMap<&str, Value<'_>> = HashMap::new();
-    // INTENTIONAL: inserting into empty HashMap, previous value always None
-    let _ = create_opts.insert("handle_token", Value::from("remoteway_create"));
-    let _ = create_opts.insert("session_handle_token", Value::from("remoteway_session"));
-
-    let create_results = portal_request(
-        &connection,
-        "CreateSession",
-        &(create_opts,),
-        "remoteway_create",
-    )
-    .await?;
-
-    // Extract session_handle from the Response results.
-    let session_handle = extract_session_handle(&connection, &create_results)?;
-    tracing::debug!(session = %session_handle, "portal session created");
-
-    // 2. SelectSources
-    let source_types: u32 = match source_type {
-        PortalSourceType::Monitor => 1,
-        PortalSourceType::Window => 2,
-        PortalSourceType::Both => 3,
-    };
-
-    let mut select_opts: HashMap<&str, Value<'_>> = HashMap::new();
-    // INTENTIONAL: inserting into empty HashMap, previous value always None
-    let _ = select_opts.insert("handle_token", Value::from("remoteway_select"));
-    let _ = select_opts.insert("types", Value::U32(source_types));
-    let _ = select_opts.insert("multiple", Value::Bool(false));
-    // Persist mode = 1: remember the selection so the dialog is skipped
-    // on subsequent runs after the user authorizes once.
-    let _ = select_opts.insert("persist_mode", Value::U32(1));
-
-    // INTENTIONAL: error propagated via ?, result HashMap not needed for SelectSources
-    let _ = portal_request(
-        &connection,
-        "SelectSources",
-        &(&session_handle, select_opts),
-        "remoteway_select",
-    )
-    .await?;
-
-    // 3. Start — may trigger a user dialog (e.g. screen/window picker).
-    // If we have a previously saved portal token, pass it to restore
-    // the session without showing the dialog again.
-    // GNOME uses "identifier", KDE uses "restore_token".
-    let saved_id = load_portal_id();
-    let mut start_opts: HashMap<&str, Value<'_>> = HashMap::new();
-    // INTENTIONAL: inserting into empty HashMap, previous value always None
-    let _ = start_opts.insert("handle_token", Value::from("remoteway_start"));
-    if let Some(ref id) = saved_id {
-        // Pass as both identifier and restore_token — the portal backend
-        // will use whichever it understands.
-        let _ = start_opts.insert("identifier", Value::from(id.as_str()));
-        let _ = start_opts.insert("restore_token", Value::from(id.as_str()));
-        tracing::info!(%id, "using saved portal token to skip dialog");
-    }
-
-    let start_results = portal_request(
-        &connection,
-        "Start",
-        &(&session_handle, "", start_opts),
-        "remoteway_start",
-    )
-    .await?;
-
-    // Log all keys from Start response for debugging.
-    let start_keys: Vec<&str> = start_results.keys().map(|s| s.as_str()).collect();
-    tracing::info!(?start_keys, "portal Start response keys");
-
-    let pw_node_id = extract_pw_node_id(&start_results)?;
-    let (stream_width, stream_height) = extract_stream_size(&start_results).unwrap_or((1920, 1080));
-    // Extract the portal session identifier/restore_token so we can skip
-    // the dialog next time. GNOME returns "identifier", KDE returns "restore_token".
-    let portal_id = start_results
-        .get("identifier")
-        .or_else(|| start_results.get("restore_token"))
-        .and_then(|v| <String>::try_from(v.clone()).ok().filter(|s| !s.is_empty()));
-    if let Some(ref id) = portal_id {
-        tracing::info!(%id, "portal session token received, saving for reuse");
-        save_portal_id(id);
-    } else {
-        tracing::info!("no portal identifier/restore_token — dialog will appear on next run too");
-    }
-    tracing::info!(
-        pw_node_id,
-        stream_width,
-        stream_height,
-        "portal screencast `PipeWire` node"
-    );
-
-    // 4. OpenPipeWireRemote — returns a file descriptor directly (not Request/Response).
-    let empty_opts: HashMap<&str, Value<'_>> = HashMap::new();
-    let fd_reply = connection
-        .call_method(
-            Some("org.freedesktop.portal.Desktop"),
-            "/org/freedesktop/portal/desktop",
-            Some("org.freedesktop.portal.ScreenCast"),
-            "OpenPipeWireRemote",
-            &(&session_handle, empty_opts),
-        )
-        .await
-        .map_err(|e| CaptureError::Protocol(format!("OpenPipeWireRemote failed: {e}")))?;
-
-    let zbus_fd: zbus::zvariant::OwnedFd = fd_reply
-        .body()
-        .deserialize()
-        .map_err(|e| CaptureError::Protocol(format!("fd deserialize failed: {e}")))?;
-
-    let pw_fd: std::os::fd::OwnedFd = zbus_fd.into();
-
-    Ok(PortalSession {
-        pw_fd,
-        pw_node_id,
-        stream_width,
-        stream_height,
-        session_handle,
-        portal_id,
-    })
-}
-
-fn get_sender_name(connection: &Connection) -> String {
-    connection
-        .unique_name()
-        .map(|n| n.as_str().trim_start_matches(':').replace('.', "_"))
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// Call a portal method and wait for the async Response signal.
-///
-/// Portal methods follow the Request/Response pattern:
-/// 1. Method call returns a Request object path immediately
-/// 2. The actual result arrives as a `Response` signal on that path
-///
-/// We subscribe to the message stream *before* making the call to avoid
-/// race conditions where the signal arrives before we start listening.
-async fn portal_request<B>(
-    connection: &Connection,
-    method: &str,
-    body: &B,
-    handle_token: &str,
-) -> Result<HashMap<String, OwnedValue>, CaptureError>
-where
-    B: zbus::zvariant::DynamicType + serde::Serialize,
-{
-    let sender = get_sender_name(connection);
-    let request_path = format!("/org/freedesktop/portal/desktop/request/{sender}/{handle_token}");
-
-    // Subscribe to D-Bus messages BEFORE making the call to avoid missing the signal.
-    let mut stream = zbus::MessageStream::from(connection);
-
-    // Make the portal method call.
-    // INTENTIONAL: error propagated via ?, reply body not needed (we wait for Response signal)
-    let _ = connection
-        .call_method(
-            Some("org.freedesktop.portal.Desktop"),
-            "/org/freedesktop/portal/desktop",
-            Some("org.freedesktop.portal.ScreenCast"),
-            method,
-            body,
-        )
-        .await
-        .map_err(|e| CaptureError::Protocol(format!("{method} call failed: {e}")))?;
-
-    // Wait for the Response signal with a timeout.
-    let timeout_duration = tokio::time::Duration::from_secs(30);
-
-    let result = tokio::time::timeout(timeout_duration, async {
-        while let Some(msg) = stream.next().await {
-            let msg = msg.map_err(|e| {
-                CaptureError::Protocol(format!("{method}: D-Bus stream error: {e}"))
-            })?;
-            let hdr = msg.header();
-
-            // Filter for Response signal at the expected Request path.
-            let is_response_signal = hdr.message_type() == zbus::message::Type::Signal
-                && hdr.member().is_some_and(|m| m.as_str() == "Response")
-                && hdr.path().is_some_and(|p| p.as_str() == request_path);
-            if is_response_signal {
-                let (code, results): (u32, HashMap<String, OwnedValue>) =
-                    msg.body().deserialize().map_err(|e| {
-                        CaptureError::Protocol(format!("{method} response parse failed: {e}"))
-                    })?;
-
-                if code != 0 {
-                    return Err(CaptureError::Protocol(format!(
-                        "{method} rejected by user or failed (code {code})"
-                    )));
+        std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Err(e) = gstreamer::init() {
+                    return Err(CaptureError::CaptureFailed(format!("gstreamer init: {e}")));
                 }
 
-                return Ok(results);
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| CaptureError::CaptureFailed(format!("tokio runtime: {e}")))?;
+
+                rt.block_on(Self::run_capture(frame_tx, stop_flag_clone, ready_tx))
+            }));
+
+            match result {
+                Ok(Ok(())) => info!("portal thread exited cleanly"),
+                Ok(Err(e)) => {
+                    error!("portal thread error: {e}");
+                    // ready_tx may have been moved into run_capture already;
+                    // if the error came from gstreamer init or tokio build,
+                    // the error was already sent inside the closure above.
+                }
+                Err(panic) => {
+                    let msg = panic
+                        .downcast_ref::<&str>()
+                        .map(|s| s.to_string())
+                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "unknown panic".into());
+                    error!("portal thread panicked: {msg}");
+                    // ready_tx has been moved; the panic after readiness
+                    // is non-fatal — capture_loop already running.
+                }
+            }
+        });
+
+        // Wait for the portal handshake + pipeline setup to complete.
+        let ready_result = ready_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .map_err(|e| CaptureError::CaptureFailed(format!("portal setup timed out: {e}")))?;
+        ready_result?;
+
+        Ok(PortalBackend {
+            frame_rx,
+            stop_flag,
+        })
+    }
+
+    /// Run the portal source-selection dialog and save the restore token.
+    /// Call this from a desktop session once so subsequent SSH runs skip the dialog.
+    pub fn setup_restore_token() -> Result<(), CaptureError> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| CaptureError::CaptureFailed(format!("setup rt: {e}")))?;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = rt.block_on(Self::portal_handshake());
+            let _ = tx.send(result);
+        });
+
+        let _ = rx
+            .recv_timeout(std::time::Duration::from_secs(180))
+            .map_err(|_| CaptureError::CaptureFailed("token setup timed out".into()))?
+            .map_err(|e| CaptureError::CaptureFailed(format!("{e}")))?;
+
+        info!("restore token saved — portal setup complete");
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Lifecycle orchestration
+    // ------------------------------------------------------------------
+
+    /// Orchestrates the full capture lifecycle on a Tokio `current_thread` runtime.
+    ///
+    /// 1. Portal handshake → `PipeWire` fd + node id
+    /// 2. Build and start the `GStreamer` pipeline
+    /// 3. Signal readiness via `ready_tx`
+    /// 4. Enter the capture loop (blocks until `stop_flag` is set)
+    ///
+    /// All errors that occur before the readiness signal are forwarded
+    /// through `ready_tx` so the caller can fail fast.
+    async fn run_capture(
+        frame_tx: mpsc::Sender<CapturedFrame>,
+        stop_flag: Arc<AtomicBool>,
+        ready_tx: std::sync::mpsc::Sender<Result<(), CaptureError>>,
+    ) -> Result<(), CaptureError> {
+        /// Signal an error through `ready_tx` and return it for `?` propagation.
+        ///
+        /// This ensures the error reaches both the readiness channel (so
+        /// `new()` fails immediately) and the caller's error path.
+        fn fail(
+            tx: &std::sync::mpsc::Sender<Result<(), CaptureError>>,
+            e: CaptureError,
+        ) -> CaptureError {
+            let msg = format!("{e}");
+            let _ = tx.send(Err(CaptureError::CaptureFailed(msg.clone())));
+            CaptureError::CaptureFailed(msg)
+        }
+
+        // Portal handshake
+        let (pw_fd, pw_node_id) = Self::portal_handshake()
+            .await
+            .map_err(|e| fail(&ready_tx, e))?;
+        let pw_raw_fd = pw_fd.as_raw_fd();
+
+        let pipeline =
+            Self::build_pipeline(pw_raw_fd, pw_node_id).map_err(|e| fail(&ready_tx, e))?;
+
+        let appsink = pipeline
+            .by_name("appsink")
+            .and_then(|e| e.downcast::<gstreamer_app::AppSink>().ok())
+            .ok_or_else(|| {
+                fail(
+                    &ready_tx,
+                    CaptureError::CaptureFailed(
+                        "appsink element not found in GStreamer pipeline".into(),
+                    ),
+                )
+            })?;
+
+        pipeline.set_state(gstreamer::State::Playing).map_err(|_| {
+            fail(
+                &ready_tx,
+                CaptureError::CaptureFailed("failed to start GStreamer pipeline".into()),
+            )
+        })?;
+        // Keep PipeWire fd open for the pipeline's lifetime.
+        let _pw_fd = pw_fd;
+
+        // Drain any pending bus messages before capturing.
+        {
+            let bus = pipeline.bus().ok_or_else(|| {
+                fail(
+                    &ready_tx,
+                    CaptureError::CaptureFailed("no pipeline bus".into()),
+                )
+            })?;
+            while let Some(msg) = bus.pop() {
+                use gstreamer::MessageView;
+                match msg.view() {
+                    MessageView::Error(err) => {
+                        warn!(
+                            "pipeline error: {} ({})",
+                            err.error(),
+                            err.debug().unwrap_or_default()
+                        );
+                    }
+                    MessageView::Warning(wrn) => {
+                        warn!(
+                            "pipeline warning: {} ({})",
+                            wrn.error(),
+                            wrn.debug().unwrap_or_default()
+                        );
+                    }
+                    _ => {}
+                }
             }
         }
-        Err(CaptureError::Protocol(format!(
-            "{method}: D-Bus connection closed before response"
-        )))
-    })
-    .await;
+        trace!("pipeline playing");
 
-    match result {
-        Ok(inner) => inner,
-        Err(_) => Err(CaptureError::Protocol(format!(
-            "{method}: timed out waiting for portal response (30s)"
-        ))),
+        info!(
+            fd = pw_raw_fd,
+            node = pw_node_id,
+            "portal + GStreamer capture started"
+        );
+
+        // Signal readiness — pipeline is live, frames will flow.
+        let _ = ready_tx.send(Ok(()));
+
+        Self::capture_loop(appsink, &frame_tx, &stop_flag);
+
+        let _ = pipeline.set_state(gstreamer::State::Null);
+        info!("portal capture stopped");
+
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Portal handshake via ashpd
+    // ------------------------------------------------------------------
+
+    /// Run the portal D-Bus handshake using `ashpd`.
+    /// Returns `(OwnedFd, pipewire_node_id)`.  The fd must be kept alive
+    /// for the entire lifetime of the `GStreamer` pipeline.
+    async fn portal_handshake() -> Result<(OwnedFd, u32), CaptureError> {
+        let screencast = Screencast::new()
+            .await
+            .map_err(|e| CaptureError::CaptureFailed(format!("screencast connect: {e}")))?;
+
+        let saved_token = load_restore_token();
+
+        // CreateSessionOptions is not re-exported; Default() works fine.
+        let session = screencast
+            .create_session(Default::default())
+            .await
+            .map_err(|e| CaptureError::CaptureFailed(format!("create session: {e}")))?;
+
+        info!("portal session created");
+
+        // If we have a restore token, skip the source-selection dialog.
+        let mut select_opts = SelectSourcesOptions::default()
+            .set_sources(SourceType::Monitor | SourceType::Window)
+            .set_multiple(false)
+            .set_cursor_mode(CursorMode::Embedded);
+        if let Some(ref token) = saved_token {
+            select_opts = select_opts.set_restore_token(token.as_str());
+        }
+
+        screencast
+            .select_sources(&session, select_opts)
+            .await
+            .map_err(|e| CaptureError::CaptureFailed(format!("select sources: {e}")))?;
+
+        info!("portal sources selected");
+
+        // Use a dummy WindowIdentifier to anchor the screencast session.
+        // This matches the screencast_mvp pattern and works for headless
+        // (SSH) sessions where no real X11 window exists.
+        let window_id = ashpd::WindowIdentifier::from_xid(0);
+        let response = screencast
+            .start(&session, Some(&window_id), StartCastOptions::default())
+            .await
+            .map_err(|e| CaptureError::CaptureFailed(format!("start: {e}")))?
+            .response()
+            .map_err(|e| CaptureError::CaptureFailed(format!("start result: {e}")))?;
+
+        let stream = response
+            .streams()
+            .first()
+            .ok_or_else(|| CaptureError::CaptureFailed("no streams in portal response".into()))?
+            .clone();
+
+        let pw_node_id = stream.pipe_wire_node_id();
+
+        let pw_fd = screencast
+            .open_pipe_wire_remote(&session, Default::default())
+            .await
+            .map_err(|e| CaptureError::CaptureFailed(format!("open_pipe_wire_remote: {e}")))?;
+
+        debug!(fd = pw_fd.as_raw_fd(), node = pw_node_id, "pipewire source");
+
+        // Save restore token if portal provided one.
+        if let Some(token) = response.restore_token() {
+            save_restore_token(token);
+        }
+
+        Ok((pw_fd, pw_node_id))
+    }
+
+    // ------------------------------------------------------------------
+    // `GStreamer` pipeline
+    // ------------------------------------------------------------------
+
+    /// Build the `GStreamer` pipeline programmatically (matching `screencast_mvp`).
+    /// Pipeline: pipewiresrc → videoconvert → capsfilter(BGRx) → appsink
+    fn build_pipeline(pw_fd: i32, pw_node_id: u32) -> Result<gstreamer::Pipeline, CaptureError> {
+        let pipewire_src = gstreamer::ElementFactory::make("pipewiresrc")
+            .property("fd", pw_fd)
+            .property("path", pw_node_id.to_string())
+            .build()
+            .map_err(|e| {
+                CaptureError::CaptureFailed(format!(
+                    "failed to create pipewiresrc (is gst-plugin-pipewire installed?): {e}"
+                ))
+            })?;
+
+        let videoconvert = gstreamer::ElementFactory::make("videoconvert")
+            .build()
+            .map_err(|e| {
+                CaptureError::CaptureFailed(format!("failed to create videoconvert: {e}"))
+            })?;
+
+        let capsfilter = gstreamer::ElementFactory::make("capsfilter")
+            .property(
+                "caps",
+                gstreamer::Caps::builder("video/x-raw")
+                    .field("format", "BGRx")
+                    .build(),
+            )
+            .build()
+            .map_err(|e| {
+                CaptureError::CaptureFailed(format!("failed to create capsfilter: {e}"))
+            })?;
+
+        let appsink = gstreamer::ElementFactory::make("appsink")
+            .property("name", "appsink")
+            .property("sync", false)
+            .build()
+            .map_err(|e| CaptureError::CaptureFailed(format!("failed to create appsink: {e}")))?;
+
+        let pipeline = gstreamer::Pipeline::default();
+
+        pipeline
+            .add_many([&pipewire_src, &videoconvert, &capsfilter, &appsink])
+            .map_err(|e| {
+                CaptureError::CaptureFailed(format!("failed to add elements to pipeline: {e}"))
+            })?;
+
+        gstreamer::Element::link_many([&pipewire_src, &videoconvert, &capsfilter, &appsink])
+            .map_err(|e| CaptureError::CaptureFailed(format!("failed to link elements: {e}")))?;
+
+        Ok(pipeline)
+    }
+
+    /// Convert a `GStreamer` sample into a [`CapturedFrame`].
+    ///
+    /// Reads the buffer data, extracts dimensions from caps (or infers them
+    /// from the buffer size), and packages everything into a frame ready for
+    /// the compression pipeline.
+    fn sample_to_frame(sample: &gstreamer::Sample) -> Result<CapturedFrame, CaptureError> {
+        let buffer = sample
+            .buffer()
+            .ok_or_else(|| CaptureError::CaptureFailed("sample has no buffer".into()))?;
+
+        let map = buffer
+            .map_readable()
+            .map_err(|_| CaptureError::CaptureFailed("gst buffer map_readable failed".into()))?;
+        let data = map.as_slice();
+        let buf_size = data.len() as u32;
+        const BYTES_PER_PIXEL: u32 = 4; // BGRx
+
+        // Read dimensions from caps if available, otherwise infer from buffer.
+        let caps = sample.caps();
+        let caps_w = caps
+            .as_ref()
+            .and_then(|c| c.structure(0).and_then(|s| s.get::<i32>("width").ok()))
+            .unwrap_or(0);
+        let caps_h = caps
+            .as_ref()
+            .and_then(|c| c.structure(0).and_then(|s| s.get::<i32>("height").ok()))
+            .unwrap_or(0);
+        let caps_stride = caps
+            .as_ref()
+            .and_then(|c| c.structure(0).and_then(|s| s.get::<i32>("stride").ok()))
+            .unwrap_or(0);
+
+        let (width, height, stride) = if caps_w > 0 && caps_h > 0 {
+            let s = if caps_stride > 0 {
+                caps_stride as u32
+            } else {
+                caps_w as u32 * BYTES_PER_PIXEL
+            };
+            (caps_w as u32, caps_h as u32, s)
+        } else {
+            // appsink caps often lack dimensions; estimate from buffer size.
+            let s = if caps_stride > 0 {
+                caps_stride as u32
+            } else {
+                buf_size
+            }; // assume single row
+            let h = if buf_size > s { buf_size / s } else { 1 };
+            let w = s / BYTES_PER_PIXEL;
+            (w, h, s)
+        };
+
+        let pixel_data = data.to_vec();
+        let timestamp_ns = buffer.pts().map_or(0, |pts| pts.nseconds());
+
+        Ok(CapturedFrame {
+            data: pixel_data,
+            damage: vec![DamageRect::new(0, 0, width, height)],
+            format: PixelFormat::Xbgr8888,
+            width,
+            height,
+            stride,
+            timestamp_ns,
+        })
+    }
+
+    /// Main capture loop: pulls samples from `appsink`, converts to [`CapturedFrame`],
+    /// and pushes them through `frame_tx`.
+    ///
+    /// Runs until `stop_flag` is set or the channel is closed. Uses non-blocking
+    /// `try_send` to avoid panicking inside the Tokio `current_thread` runtime.
+    fn capture_loop(
+        appsink: gstreamer_app::AppSink,
+        frame_tx: &mpsc::Sender<CapturedFrame>,
+        stop_flag: &AtomicBool,
+    ) {
+        let timeout_dur = gstreamer::ClockTime::from_mseconds(2000);
+
+        loop {
+            if stop_flag.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let sample = match appsink.try_pull_sample(timeout_dur) {
+                Some(s) => s,
+                None => {
+                    trace!("no sample available");
+                    continue;
+                }
+            };
+
+            let frame = match Self::sample_to_frame(&sample) {
+                Ok(f) => f,
+                Err(e) => {
+                    warn!("frame conversion error: {e}");
+                    continue;
+                }
+            };
+
+            // Use try_send (non-blocking) — we're inside a current_thread
+            // runtime where blocking_send would panic.
+            match frame_tx.try_send(frame) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    // Ring is full — next recv() drains it, keep going.
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    break;
+                }
+            }
+        }
     }
 }
 
-/// Extract `session_handle` from the `CreateSession` Response results.
-fn extract_session_handle(
-    connection: &Connection,
-    results: &HashMap<String, OwnedValue>,
-) -> Result<OwnedObjectPath, CaptureError> {
-    if let Some(v) = results.get("session_handle") {
-        // Try proper OwnedValue → OwnedObjectPath conversion.
-        if let Ok(path) = <OwnedObjectPath>::try_from(v.clone()) {
-            return Ok(path);
-        }
-        // Try OwnedValue → String → OwnedObjectPath.
-        if let Ok(s) = <String>::try_from(v.clone()) {
-            return OwnedObjectPath::try_from(s.clone())
-                .map_err(|e| CaptureError::Protocol(format!("invalid session_handle '{s}': {e}")));
-        }
-        // Last resort: extract path from Debug representation.
-        // Debug format: OwnedValue(Str("/org/.../session")) or ObjectPath("/org/.../session")
-        let debug = format!("{v:?}");
-        if let Some(path_str) = extract_quoted_path(&debug) {
-            return OwnedObjectPath::try_from(path_str.to_string()).map_err(|e| {
-                CaptureError::Protocol(format!("invalid session_handle '{path_str}': {e}"))
-            });
-        }
-        return Err(CaptureError::Protocol(format!(
-            "cannot parse session_handle from: {debug}"
-        )));
+// ---------------------------------------------------------------------------
+// CaptureBackend trait implementation
+// ---------------------------------------------------------------------------
+
+impl CaptureBackend for PortalBackend {
+    fn next_frame(&mut self) -> Result<CapturedFrame, CaptureError> {
+        self.frame_rx
+            .blocking_recv()
+            .ok_or(CaptureError::SessionEnded)
     }
 
-    // Construct deterministically from token (per portal spec).
-    let sender = get_sender_name(connection);
-    OwnedObjectPath::try_from(format!(
-        "/org/freedesktop/portal/desktop/session/{sender}/remoteway_session"
-    ))
-    .map_err(|e| CaptureError::Protocol(format!("session path construction failed: {e}")))
+    fn name(&self) -> &'static str {
+        "portal-gst"
+    }
+
+    fn stop(&mut self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+        self.frame_rx.close();
+    }
 }
 
-/// Extract a quoted string that looks like an object path from a Debug representation.
-/// Looks for `"/org/..."`  pattern inside the debug output.
-fn extract_quoted_path(debug: &str) -> Option<&str> {
-    let start = debug.find("\"/org/")?;
-    let inner = &debug[start + 1..]; // skip opening quote
-    let end = inner.find('"')?;
-    Some(&inner[..end])
-}
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
-/// Extract `PipeWire` `node_id` from the Start Response results.
-fn extract_pw_node_id(results: &HashMap<String, OwnedValue>) -> Result<u32, CaptureError> {
-    let streams = results
-        .get("streams")
-        .ok_or_else(|| CaptureError::Protocol("missing 'streams' in Start response".into()))?;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    // streams is a(ua{sv}). Parse via Debug representation as the exact
-    // zvariant structure type is complex. We look for the first U32 value.
-    let streams_str = format!("{streams:?}");
-    tracing::info!(streams_raw = %streams_str, "portal Start streams response");
-    parse_node_id_from_streams(&streams_str).ok_or_else(|| {
-        CaptureError::Protocol(format!(
-            "cannot extract node_id from streams: {streams_str}"
-        ))
-    })
-}
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Parse `PipeWire` `node_id` from the debug string of zvariant streams value.
-/// The format is typically: `Value(Array([Structure([U32(42), Dict(...)]), ...]))`
-/// We look for the first U32 value.
-fn parse_node_id_from_streams(s: &str) -> Option<u32> {
-    let marker = "U32(";
-    let start = s.find(marker)? + marker.len();
-    let end = s[start..].find(')')? + start;
-    s[start..end].parse().ok()
-}
+    // ── Token helpers ─────────────────────────────────────────────────────
 
-/// Extract stream size from the Start response.
-/// The streams dict contains `"size": (I32(w), I32(h))`.
-fn extract_stream_size(results: &HashMap<String, OwnedValue>) -> Option<(u32, u32)> {
-    let streams = results.get("streams")?;
-    let s = format!("{streams:?}");
-    parse_stream_size(&s)
-}
+    #[test]
+    fn token_path_returns_non_empty() {
+        let path = token_path();
+        assert!(!path.as_os_str().is_empty());
+        assert!(path.ends_with(TOKEN_FILE));
+    }
 
-/// Parse width and height from the streams debug string.
-/// Looks for `Str("size"): Value(Structure(... [I32(w), I32(h)] ...))`.
-fn parse_stream_size(s: &str) -> Option<(u32, u32)> {
-    let size_marker = "\"size\"): Value(Structure";
-    let idx = s.find(size_marker)?;
-    let after = &s[idx..];
+    #[test]
+    fn save_and_load_roundtrip() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("remoteway-portal-test");
+        let dir_str = dir.to_string_lossy().into_owned();
+        let prev = std::env::var("XDG_CACHE_HOME").ok();
+        // SAFETY: test-only, single-threaded.
+        unsafe { std::env::set_var("XDG_CACHE_HOME", &dir_str) };
+        let token = "test-restore-token-12345";
+        save_restore_token(token);
+        assert_eq!(load_restore_token().as_deref(), Some(token));
+        let _ = std::fs::remove_dir_all(&dir);
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("XDG_CACHE_HOME", v) };
+        } else {
+            unsafe { std::env::remove_var("XDG_CACHE_HOME") };
+        }
+    }
 
-    // Find the I32 values after "size"
-    let w = parse_next_i32(after)?;
-    let rest = &after[after.find("I32(")? + 4..];
-    let rest = &rest[rest.find(')')? + 1..];
-    let h = parse_next_i32(rest)?;
+    #[test]
+    fn save_restore_token_does_not_panic_on_bad_path() {
+        save_restore_token("dummy");
+    }
 
-    Some((w as u32, h as u32))
-}
+    #[test]
+    fn portal_backend_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<PortalBackend>();
+    }
 
-fn parse_next_i32(s: &str) -> Option<i32> {
-    let marker = "I32(";
-    let start = s.find(marker)? + marker.len();
-    let end = s[start..].find(')')? + start;
-    s[start..end].parse().ok()
+    #[test]
+    fn capture_backend_trait_object() {
+        fn _assert() {
+            let _: Box<dyn CaptureBackend>;
+        }
+    }
+
+    #[test]
+    fn build_pipeline_creates_pipeline() {
+        if gstreamer::init().is_err() {
+            eprintln!("skipping test: gstreamer not available");
+            return;
+        }
+        let result = PortalBackend::build_pipeline(42, 123);
+        assert!(result.is_ok(), "pipeline should parse: {:?}", result.err());
+    }
+
+    #[test]
+    fn portal_backend_new_without_dbus_does_not_panic() {
+        let _result = PortalBackend::new();
+    }
+
+    #[test]
+    fn portal_backend_name_is_static() {
+        let _: &'static str = PortalBackend::new()
+            .ok()
+            .map(|b| b.name())
+            .unwrap_or("portal-gst");
+    }
 }

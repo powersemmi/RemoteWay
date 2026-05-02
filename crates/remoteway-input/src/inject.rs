@@ -1,3 +1,5 @@
+//! Wayland virtual input injection — replays remote input events on the server side.
+
 use std::os::fd::AsFd;
 use std::time::{SystemTime, UNIX_EPOCH};
 
