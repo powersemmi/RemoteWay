@@ -15,12 +15,13 @@ description = "FrameInterpolator trait + FSR/RIFE/NVIDIA OF backends"
 default = []
 fsr2 = ["dep:ash", "dep:bytemuck", "dep:fsr", "dep:fsr-sys"]
 fsr2-native = ["dep:fsr", "dep:fsr-sys", "dep:ash", "dep:bytemuck"]
-fsr3 = ["dep:ash", "dep:bytemuck", "dep:half", "dep:fsr", "dep:fsr-sys"]
+fsr3 = ["dep:ash", "dep:bytemuck", "dep:libloading", "dep:half", "dep:fsr", "dep:fsr-sys"]
 fsr2-rife = ["rife", "fsr2"]
 rife = []
 
 [dependencies]
 thiserror.workspace = true
+libloading = { version = "0.8", optional = true }
 
 # Optional GPU dependencies (feature-gated)
 wgpu = { workspace = true, optional = true }

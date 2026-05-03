@@ -210,7 +210,11 @@ pub async fn recv_decompress_loop(
                             stride,
                             msg.header.timestamp_ns,
                         );
-                        im.backend().upscale(&src, tw, th).ok()
+                        {
+                            let r = im.backend().upscale(&src, tw, th);
+                            if let Err(ref e) = r { debug!("gpu upscale failed: {}", e); }
+                            r.ok()
+                        }
                     });
 
                     if let Some(gpu_frame) = gpu_upscaled {

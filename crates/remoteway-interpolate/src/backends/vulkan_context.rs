@@ -368,19 +368,26 @@ impl VulkanContext {
 
         // SAFETY: All Vulkan handles (device, queue, fence, command buffer)
         // are valid. The command buffer was allocated from this device's
-        // command pool and has been ended. wait_for_fences with timeout
-        // u64::MAX ensures the GPU has finished before we destroy the fence.
-        unsafe {
+        // command pool and has been ended.
+        let result = unsafe {
             self.device
                 .queue_submit(self.compute_queue, &[submit_info], fence)
-                .map_err(|e| InterpolateError::InterpolateFailed(format!("queue submit: {e}")))?;
-            self.device
-                .wait_for_fences(&[fence], true, u64::MAX)
-                .map_err(|e| InterpolateError::InterpolateFailed(format!("wait fence: {e}")))?;
-            self.device.destroy_fence(fence, None);
-        }
+                .map_err(|e| InterpolateError::InterpolateFailed(format!("queue submit: {e}")))
+                .and_then(|()| {
+                    self.device
+                        .wait_for_fences(&[fence], true, u64::MAX)
+                        .map_err(|e| {
+                            InterpolateError::InterpolateFailed(format!("wait fence: {e}"))
+                        })
+                })
+        };
 
-        Ok(())
+        // Always destroy the fence, even if submit/wait failed.
+        // SAFETY: fence is a valid handle. If the device was lost,
+        // destroying the fence is still safe (it's a no-op or deferred).
+        unsafe { self.device.destroy_fence(fence, None) };
+
+        result
     }
 
     /// Allocate a single command buffer from the pool.

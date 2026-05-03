@@ -344,63 +344,94 @@ type FnFrameInterpolationDispatch = unsafe extern "C" fn(
 type FnGetScratchMemorySizeVK =
     unsafe extern "C" fn(physical_device: vk::PhysicalDevice, max_contexts: u32) -> usize;
 
+
 // ---------------------------------------------------------------------------
-// extern "C" declarations – linked from the static library built by build.rs
+// FFI declarations – statically linked by build.rs
 // ---------------------------------------------------------------------------
 
-extern "C" {
-    pub fn ffxGetScratchMemorySizeVK(
-        physical_device: vk::PhysicalDevice,
-        max_contexts: u32,
-    ) -> usize;
-
-    pub fn ffxGetInterfaceVK(
-        out_interface: *mut FfxInterface,
-        device: FfxDevice,
-        scratch_buffer: *mut c_void,
-        scratch_buffer_size: usize,
-        max_contexts: u32,
-    ) -> FfxErrorCode;
-
-    pub fn ffxFrameInterpolationContextCreate(
-        context: *mut FfxFrameInterpolationContext,
-        desc: *const FfxFrameInterpolationContextDescription,
-    ) -> FfxErrorCode;
-
-    pub fn ffxFrameInterpolationContextDestroy(
-        context: *mut FfxFrameInterpolationContext,
-    ) -> FfxErrorCode;
-
-    pub fn ffxFrameInterpolationGetSharedResourceDescriptions(
-        context: *const FfxFrameInterpolationContext,
-        desc: *mut FfxFrameInterpolationSharedResourceDescriptions,
-    ) -> FfxErrorCode;
-
-    pub fn ffxFrameInterpolationPrepare(
-        context: *mut FfxFrameInterpolationContext,
-        desc: *const FfxFrameInterpolationPrepareDescription,
-    ) -> FfxErrorCode;
-
-    pub fn ffxFrameInterpolationDispatch(
-        context: *mut FfxFrameInterpolationContext,
-        desc: *const FfxFrameInterpolationDispatchDescription,
-    ) -> FfxErrorCode;
+pub unsafe fn ffxGetScratchMemorySizeVK(
+    physical_device: ash::vk::PhysicalDevice, max_contexts: u32,
+) -> usize {
+    unsafe extern "C" {
+        fn ffxGetScratchMemorySizeVK(
+            physical_device: ash::vk::PhysicalDevice, max_contexts: u32,
+        ) -> usize;
+    }
+    ffxGetScratchMemorySizeVK(physical_device, max_contexts)
 }
 
-/// Zero-sized marker – the FFI functions are linked statically.
-///
-/// Kept for API compatibility with code that expects an "FfxFrameGenLib"
-/// instance; the functions are called directly via `extern "C"` instead.
-pub struct FfxFrameGenLib;
-
-// SAFETY: No shared state; all FFI calls delegate to the statically linked library.
-unsafe impl Send for FfxFrameGenLib {}
-// SAFETY: No shared state; all FFI calls delegate to the statically linked library.
-unsafe impl Sync for FfxFrameGenLib {}
-
-impl FfxFrameGenLib {
-    /// Returns a dummy handle – the library is statically linked.
-    pub fn load() -> Result<Self, String> {
-        Ok(FfxFrameGenLib)
+pub unsafe fn ffxGetInterfaceVK(
+    out_interface: *mut FfxInterface, device: FfxDevice,
+    scratch_buffer: *mut std::ffi::c_void, scratch_buffer_size: usize, max_contexts: u32,
+) -> FfxErrorCode {
+    unsafe extern "C" {
+        fn ffxGetInterfaceVK(
+            out_interface: *mut FfxInterface, device: FfxDevice,
+            scratch_buffer: *mut std::ffi::c_void, scratch_buffer_size: usize, max_contexts: u32,
+        ) -> FfxErrorCode;
     }
+    ffxGetInterfaceVK(out_interface, device, scratch_buffer, scratch_buffer_size, max_contexts)
+}
+
+pub unsafe fn ffxFrameInterpolationContextCreate(
+    context: *mut FfxFrameInterpolationContext,
+    desc: *const FfxFrameInterpolationContextDescription,
+) -> FfxErrorCode {
+    unsafe extern "C" {
+        fn ffxFrameInterpolationContextCreate(
+            context: *mut FfxFrameInterpolationContext,
+            desc: *const FfxFrameInterpolationContextDescription,
+        ) -> FfxErrorCode;
+    }
+    ffxFrameInterpolationContextCreate(context, desc)
+}
+
+pub unsafe fn ffxFrameInterpolationContextDestroy(
+    context: *mut FfxFrameInterpolationContext,
+) -> FfxErrorCode {
+    unsafe extern "C" {
+        fn ffxFrameInterpolationContextDestroy(
+            context: *mut FfxFrameInterpolationContext,
+        ) -> FfxErrorCode;
+    }
+    ffxFrameInterpolationContextDestroy(context)
+}
+
+pub unsafe fn ffxFrameInterpolationGetSharedResourceDescriptions(
+    context: *const FfxFrameInterpolationContext,
+    desc: *mut FfxFrameInterpolationSharedResourceDescriptions,
+) -> FfxErrorCode {
+    unsafe extern "C" {
+        fn ffxFrameInterpolationGetSharedResourceDescriptions(
+            context: *const FfxFrameInterpolationContext,
+            desc: *mut FfxFrameInterpolationSharedResourceDescriptions,
+        ) -> FfxErrorCode;
+    }
+    ffxFrameInterpolationGetSharedResourceDescriptions(context, desc)
+}
+
+pub unsafe fn ffxFrameInterpolationPrepare(
+    context: *mut FfxFrameInterpolationContext,
+    desc: *const FfxFrameInterpolationPrepareDescription,
+) -> FfxErrorCode {
+    unsafe extern "C" {
+        fn ffxFrameInterpolationPrepare(
+            context: *mut FfxFrameInterpolationContext,
+            desc: *const FfxFrameInterpolationPrepareDescription,
+        ) -> FfxErrorCode;
+    }
+    ffxFrameInterpolationPrepare(context, desc)
+}
+
+pub unsafe fn ffxFrameInterpolationDispatch(
+    context: *mut FfxFrameInterpolationContext,
+    desc: *const FfxFrameInterpolationDispatchDescription,
+) -> FfxErrorCode {
+    unsafe extern "C" {
+        fn ffxFrameInterpolationDispatch(
+            context: *mut FfxFrameInterpolationContext,
+            desc: *const FfxFrameInterpolationDispatchDescription,
+        ) -> FfxErrorCode;
+    }
+    ffxFrameInterpolationDispatch(context, desc)
 }

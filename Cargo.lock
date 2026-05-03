@@ -1914,6 +1914,7 @@ dependencies = [
  "fsr",
  "fsr-sys",
  "half",
+ "libloading",
  "thiserror 2.0.18",
  "wgpu",
 ]

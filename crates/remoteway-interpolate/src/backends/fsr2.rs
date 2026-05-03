@@ -339,6 +339,18 @@ impl Fsr2Interpolator {
 
         drop(guard);
 
+        // Create native upscaler sharing the same Vulkan context.
+        // Must be created AFTER dropping the guard to avoid deadlock
+        // (with_context also locks the same mutex).
+        let native_upscaler = super::fsr2_native::Fsr2NativeInterpolator::with_context(
+            ctx.clone(),
+            1920,
+            1080,
+            1920,
+            1080,
+        )
+        .ok();
+
         Ok(Self {
             ctx,
             motion_pipeline,
@@ -357,10 +369,7 @@ impl Fsr2Interpolator {
             cached: Mutex::new(None),
             block_size,
             search_radius,
-            native_upscaler: super::fsr2_native::Fsr2NativeInterpolator::new(
-                1920, 1080, 1920, 1080,
-            )
-            .ok(),
+            native_upscaler,
         })
     }
 

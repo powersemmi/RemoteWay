@@ -120,7 +120,7 @@ fn backend_detector_always_has_fallback() {
 
 #[test]
 fn backend_detector_select_best_works() {
-    let interp = BackendDetector::select_best().unwrap();
+    let mut interp = BackendDetector::select_best().unwrap();
     // Without GPU features: linear-blend. With GPU features + GPU: may be a GPU backend.
     assert!(!interp.name().is_empty());
 
@@ -140,11 +140,10 @@ fn backend_detector_create_linear_blend() {
 fn backend_detector_create_all_returns_result() {
     // Each backend returns either Ok (if available) or a non-empty error.
     for kind in [
-        BackendKind::WgpuOpticalFlow,
         BackendKind::Fsr2,
-        BackendKind::NvidiaOpticalFlow,
-        BackendKind::Fsr3Hardware,
-        BackendKind::Rife,
+        BackendKind::Fsr3,
+        BackendKind::Fsr2Rife,
+        BackendKind::LinearBlend,
     ] {
         let result = BackendDetector::create_backend(kind);
         match result {
