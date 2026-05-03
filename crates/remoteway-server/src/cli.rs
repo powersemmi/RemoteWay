@@ -47,6 +47,11 @@ pub struct Cli {
     #[arg(last = true)]
     pub command: Vec<String>,
 
+    /// Server-side downscale factor before compression (0.1–1.0).
+    /// 1.0 = native resolution, 0.5 = half, 0.25 = quarter.
+    #[arg(long, default_value = "1.0")]
+    pub scale: f64,
+
     /// Open portal source-selection dialog, save restore token, then exit.
     /// Requires `--features portal`. Run once from the desktop (not over SSH)
     /// to authorize screen capture so later SSH sessions can skip the dialog.

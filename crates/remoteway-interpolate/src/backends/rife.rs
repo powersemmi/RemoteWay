@@ -126,7 +126,7 @@ impl RifeInterpolator {
 
 impl FrameInterpolator for RifeInterpolator {
     fn interpolate(
-        &self,
+        &mut self,
         a: &GpuFrame,
         b: &GpuFrame,
         t: f32,
@@ -228,7 +228,7 @@ mod tests {
         let model_path = dir.join("fake-model.bin");
         std::fs::write(&model_path, b"fake model data for testing").unwrap();
 
-        let interp = RifeInterpolator::new(model_path).unwrap();
+        let mut interp = RifeInterpolator::new(model_path).unwrap();
 
         // Invalid t.
         let a = GpuFrame::from_data(vec![0u8; 16], 2, 2, 8, 0);
@@ -250,7 +250,7 @@ mod tests {
         let model_path = dir.join("model.bin");
         std::fs::write(&model_path, b"fake model").unwrap();
 
-        let interp = RifeInterpolator::new(model_path).unwrap();
+        let mut interp = RifeInterpolator::new(model_path).unwrap();
         let a = GpuFrame::from_data(vec![0u8; 16], 2, 2, 8, 0);
         let b = GpuFrame::from_data(vec![0u8; 16], 2, 2, 8, 100);
         let result = interp.interpolate(&a, &b, 0.5);

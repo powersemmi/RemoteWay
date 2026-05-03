@@ -1,3 +1,5 @@
+#![allow(clippy::undocumented_unsafe_blocks)]
+
 use std::ffi::CStr;
 
 use ash::vk;
@@ -10,7 +12,7 @@ use crate::error::InterpolateError;
 /// All Vulkan calls must be externally synchronized (via Mutex in each backend).
 #[allow(dead_code)] // Fields used across different feature combinations.
 pub(crate) struct VulkanContext {
-    _entry: ash::Entry,
+    pub(crate) _entry: ash::Entry,
     pub(crate) instance: ash::Instance,
     pub(crate) physical_device: vk::PhysicalDevice,
     pub(crate) device: ash::Device,
@@ -389,10 +391,287 @@ impl VulkanContext {
             .command_buffer_count(1);
 
         // SAFETY: self.device and self.command_pool are valid handles.
-        // alloc_info specifies one primary command buffer from the pool.
         let cmd = unsafe { self.device.allocate_command_buffers(&alloc_info) }
             .map_err(|e| InterpolateError::InterpolateFailed(format!("alloc cmd: {e}")))?;
         Ok(cmd[0])
+    }
+
+    /// GPU-accelerated bilinear upscale using `vkCmdBlitImage`.
+    ///
+    /// Takes raw RGBA8 pixel data, uploads to a GPU image, blits to a larger
+    /// image with linear filtering, and reads back the result.
+    #[allow(dead_code)]
+    pub(crate) fn upscale_blit(
+        &self,
+        src: &[u8],
+        src_w: u32,
+        src_h: u32,
+        dst_w: u32,
+        dst_h: u32,
+    ) -> Result<Vec<u8>, InterpolateError> {
+        let src_size = (src_w * src_h * 4) as u64;
+        let dst_size = (dst_w * dst_h * 4) as u64;
+
+        // --- Create staging buffer for source data ---
+        let (staging_buf, staging_mem) = self.create_buffer(
+            src_size,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )?;
+        self.upload_to_buffer(staging_mem, src)?;
+
+        // --- Create GPU images ---
+        let (src_image, src_image_mem) = self.create_image(
+            src_w,
+            src_h,
+            vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST,
+        )?;
+        let (dst_image, dst_image_mem) = self.create_image(
+            dst_w,
+            dst_h,
+            vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST,
+        )?;
+
+        // --- Create readback buffer ---
+        let (readback_buf, readback_mem) = self.create_buffer(
+            dst_size,
+            vk::BufferUsageFlags::TRANSFER_DST,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )?;
+
+        // --- Record command buffer ---
+        let cmd = self.allocate_command_buffer()?;
+        let begin_info = vk::CommandBufferBeginInfo::default();
+        unsafe { self.device.begin_command_buffer(cmd, &begin_info) }
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("begin cmd: {e}")))?;
+
+        // Transition src image for transfer.
+        self.cmd_image_barrier(
+            cmd,
+            src_image,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        );
+
+        // Copy staging buffer → source image.
+        let copy_region = vk::BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(
+                vk::ImageSubresourceLayers::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .mip_level(0)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            )
+            .image_offset(vk::Offset3D::default())
+            .image_extent(vk::Extent3D::default().width(src_w).height(src_h).depth(1));
+        unsafe {
+            self.device.cmd_copy_buffer_to_image(
+                cmd,
+                staging_buf,
+                src_image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                std::slice::from_ref(&copy_region),
+            );
+        }
+
+        // Transition src for transfer src, dst for transfer dst.
+        self.cmd_image_barrier(
+            cmd,
+            src_image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        );
+        self.cmd_image_barrier(
+            cmd,
+            dst_image,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        );
+
+        // Blit: src → dst with linear filtering.
+        let blit = vk::ImageBlit::default()
+            .src_subresource(
+                vk::ImageSubresourceLayers::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .mip_level(0)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            )
+            .src_offsets([
+                vk::Offset3D::default(),
+                vk::Offset3D::default().x(src_w as i32).y(src_h as i32).z(1),
+            ])
+            .dst_subresource(
+                vk::ImageSubresourceLayers::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .mip_level(0)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            )
+            .dst_offsets([
+                vk::Offset3D::default(),
+                vk::Offset3D::default().x(dst_w as i32).y(dst_h as i32).z(1),
+            ]);
+        unsafe {
+            self.device.cmd_blit_image(
+                cmd,
+                src_image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                dst_image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                std::slice::from_ref(&blit),
+                vk::Filter::LINEAR,
+            );
+        }
+
+        // Transition dst for transfer src → copy to buffer.
+        self.cmd_image_barrier(
+            cmd,
+            dst_image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        );
+
+        // Copy dst image → readback buffer.
+        let copy_region = vk::BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(
+                vk::ImageSubresourceLayers::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .mip_level(0)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            )
+            .image_offset(vk::Offset3D::default())
+            .image_extent(vk::Extent3D::default().width(dst_w).height(dst_h).depth(1));
+        unsafe {
+            self.device.cmd_copy_image_to_buffer(
+                cmd,
+                dst_image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                readback_buf,
+                std::slice::from_ref(&copy_region),
+            );
+        }
+
+        unsafe { self.device.end_command_buffer(cmd) }
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("end cmd: {e}")))?;
+
+        // --- Submit and read back ---
+        self.submit_and_wait(cmd)?;
+        let result = self.read_from_buffer(readback_mem, dst_size as usize)?;
+
+        // --- Cleanup ---
+        unsafe {
+            self.device.destroy_buffer(staging_buf, None);
+            self.device.free_memory(staging_mem, None);
+            self.device.destroy_image(src_image, None);
+            self.device.free_memory(src_image_mem, None);
+            self.device.destroy_image(dst_image, None);
+            self.device.free_memory(dst_image_mem, None);
+            self.device.destroy_buffer(readback_buf, None);
+            self.device.free_memory(readback_mem, None);
+            self.device.free_command_buffers(self.command_pool, &[cmd]);
+        }
+
+        Ok(result)
+    }
+
+    #[allow(dead_code)]
+    fn create_image(
+        &self,
+        width: u32,
+        height: u32,
+        usage: vk::ImageUsageFlags,
+    ) -> Result<(vk::Image, vk::DeviceMemory), InterpolateError> {
+        let img_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(vk::Format::R8G8B8A8_UNORM)
+            .extent(vk::Extent3D::default().width(width).height(height).depth(1))
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(usage)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED);
+
+        let image = unsafe { self.device.create_image(&img_info, None) }
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("create image: {e}")))?;
+
+        let mem_req = unsafe { self.device.get_image_memory_requirements(image) };
+        let mem_props = unsafe {
+            self.instance
+                .get_physical_device_memory_properties(self.physical_device)
+        };
+        let mem_type_index = (0..mem_props.memory_type_count)
+            .find(|&i| {
+                mem_req.memory_type_bits & (1 << i) != 0
+                    && mem_props.memory_types[i as usize]
+                        .property_flags
+                        .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+            })
+            .ok_or_else(|| {
+                unsafe { self.device.destroy_image(image, None) };
+                InterpolateError::InterpolateFailed("no device-local memory for image".into())
+            })?;
+
+        let alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(mem_req.size)
+            .memory_type_index(mem_type_index);
+        let mem = unsafe { self.device.allocate_memory(&alloc_info, None) }.map_err(|e| {
+            unsafe { self.device.destroy_image(image, None) };
+            InterpolateError::InterpolateFailed(format!("alloc image mem: {e}"))
+        })?;
+        unsafe { self.device.bind_image_memory(image, mem, 0) }.map_err(|e| {
+            unsafe {
+                self.device.free_memory(mem, None);
+                self.device.destroy_image(image, None);
+            }
+            InterpolateError::InterpolateFailed(format!("bind image mem: {e}"))
+        })?;
+
+        Ok((image, mem))
+    }
+
+    #[allow(dead_code)]
+    fn cmd_image_barrier(
+        &self,
+        cmd: vk::CommandBuffer,
+        image: vk::Image,
+        old_layout: vk::ImageLayout,
+        new_layout: vk::ImageLayout,
+    ) {
+        let barrier = vk::ImageMemoryBarrier::default()
+            .old_layout(old_layout)
+            .new_layout(new_layout)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(
+                vk::ImageSubresourceRange::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .base_mip_level(0)
+                    .level_count(1)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            );
+        unsafe {
+            self.device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                std::slice::from_ref(&barrier),
+            );
+        }
     }
 }
 

@@ -589,6 +589,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
+name = "fsr"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a022a701f59daa742dd6acad0c915968d57a75a7ab55ab842aff236369360de6"
+dependencies = [
+ "ash",
+ "bitflags 2.11.1",
+ "fsr-sys",
+ "thiserror 1.0.69",
+ "widestring",
+]
+
+[[package]]
+name = "fsr-sys"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d311e166b0409451241530ee1b653523286d97b9906f6718d3c36831316dc89"
+dependencies = [
+ "cc",
+ "glob",
+ "widestring",
+]
+
+[[package]]
 name = "futures-channel"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -775,6 +799,12 @@ dependencies = [
  "libc",
  "system-deps",
 ]
+
+[[package]]
+name = "glob"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "glow"
@@ -1879,7 +1909,11 @@ version = "0.0.1"
 dependencies = [
  "ash",
  "bytemuck",
+ "cc",
  "criterion",
+ "fsr",
+ "fsr-sys",
+ "half",
  "thiserror 2.0.18",
  "wgpu",
 ]
@@ -2883,6 +2917,12 @@ dependencies = [
  "bytemuck",
  "safe_arch",
 ]
+
+[[package]]
+name = "widestring"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
 name = "winapi-util"

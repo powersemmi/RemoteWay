@@ -11,16 +11,12 @@ use crate::interpolator::{FrameInterpolator, LinearBlendInterpolator};
 pub enum BackendKind {
     /// Per-pixel linear blend (CPU, universal fallback).
     LinearBlend,
-    /// Optical flow via wgpu compute shaders (requires `wgpu-backend` feature).
-    WgpuOpticalFlow,
     /// AMD FSR 2.x temporal interpolation (requires `fsr2` feature + Vulkan).
     Fsr2,
-    /// NVIDIA optical flow via `VK_NV_optical_flow` (requires `nvidia-of` feature + Turing+ GPU).
-    NvidiaOpticalFlow,
-    /// AMD FSR 3 with hardware optical flow (requires `fsr3` feature + RDNA3+).
-    Fsr3Hardware,
-    /// RIFE neural frame interpolation (requires `rife` feature).
-    Rife,
+    /// AMD FSR 3 Frame Generation + FSR SDK upscale (requires `fsr3` feature).
+    Fsr3,
+    /// FSR2 upscaling + RIFE neural interpolation (requires `fsr2-rife` feature).
+    Fsr2Rife,
 }
 
 impl BackendKind {
@@ -29,11 +25,9 @@ impl BackendKind {
     pub fn name(&self) -> &'static str {
         match self {
             Self::LinearBlend => "linear-blend",
-            Self::WgpuOpticalFlow => "wgpu-optical-flow",
             Self::Fsr2 => "fsr2",
-            Self::NvidiaOpticalFlow => "nvidia-optical-flow",
-            Self::Fsr3Hardware => "fsr3-hardware",
-            Self::Rife => "rife",
+            Self::Fsr3 => "fsr3",
+            Self::Fsr2Rife => "fsr2-rife",
         }
     }
 }
@@ -44,14 +38,11 @@ impl std::str::FromStr for BackendKind {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "linear-blend" => Ok(Self::LinearBlend),
-            "wgpu-optical-flow" => Ok(Self::WgpuOpticalFlow),
             "fsr2" => Ok(Self::Fsr2),
-            "nvidia-optical-flow" => Ok(Self::NvidiaOpticalFlow),
-            "fsr3-hardware" | "fsr3" => Ok(Self::Fsr3Hardware),
-            "rife" => Ok(Self::Rife),
+            "fsr3" => Ok(Self::Fsr3),
+            "fsr2-rife" => Ok(Self::Fsr2Rife),
             other => Err(format!(
-                "unknown backend '{other}'. Available: linear-blend, wgpu-optical-flow, \
-                 fsr2, nvidia-optical-flow, fsr3-hardware, rife"
+                "unknown backend '{other}'. Available: fsr3, fsr2, fsr2-rife, linear-blend"
             )),
         }
     }
@@ -63,40 +54,29 @@ pub struct BackendDetector;
 impl BackendDetector {
     /// Detect all available backends on this system.
     ///
-    /// Returns backends sorted by quality (best first).
+    /// Returns backends sorted by quality: fsr3 → fsr2, then CPU fallback (linear-blend).
+    /// fsr2-rife is not auto-detected.
     #[must_use]
     pub fn detect_available() -> Vec<BackendKind> {
         let mut backends = Vec::new();
 
-        // Check GPU backends (feature-gated).
-        if Self::check_nvidia_of() {
-            backends.push(BackendKind::NvidiaOpticalFlow);
-        }
+        // 1. AMD FSR 3 — Frame Generation + FSR SDK upscale
         if Self::check_fsr3() {
-            backends.push(BackendKind::Fsr3Hardware);
+            backends.push(BackendKind::Fsr3);
         }
+
+        // 2. AMD FSR 2 — Vulkan temporal interpolation
         if Self::check_fsr2() {
             backends.push(BackendKind::Fsr2);
         }
-        if Self::check_wgpu() {
-            backends.push(BackendKind::WgpuOpticalFlow);
-        }
-        if Self::check_rife() {
-            backends.push(BackendKind::Rife);
-        }
 
-        // CPU fallback is always available.
+        // Last: CPU fallback (always available).
         backends.push(BackendKind::LinearBlend);
 
         backends
     }
 
     /// Select the best available backend and create an interpolator.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InterpolateError::InitFailed`] if no backend can be
-    /// initialized (e.g., Vulkan unavailable, GPU not compatible).
     pub fn select_best() -> Result<Box<dyn FrameInterpolator>, InterpolateError> {
         let available = Self::detect_available();
         Self::create_backend(
@@ -108,79 +88,51 @@ impl BackendDetector {
     }
 
     /// Create an interpolator for a specific backend kind.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InterpolateError::InitFailed`] if the requested backend
-    /// cannot be initialized (feature not enabled, driver missing, etc.).
     pub fn create_backend(
         kind: BackendKind,
     ) -> Result<Box<dyn FrameInterpolator>, InterpolateError> {
         match kind {
             BackendKind::LinearBlend => Ok(Box::new(LinearBlendInterpolator)),
-            #[cfg(feature = "wgpu-backend")]
-            BackendKind::WgpuOpticalFlow => {
-                let interp =
-                    crate::backends::wgpu_optical_flow::WgpuOpticalFlowInterpolator::new()?;
-                Ok(Box::new(interp))
-            }
-            #[cfg(not(feature = "wgpu-backend"))]
-            BackendKind::WgpuOpticalFlow => Err(InterpolateError::InitFailed(
-                "wgpu-backend feature not enabled".into(),
-            )),
             #[cfg(feature = "fsr2")]
-            BackendKind::Fsr2 => {
-                let interp = crate::backends::fsr2::Fsr2Interpolator::new()?;
-                Ok(Box::new(interp))
-            }
+            BackendKind::Fsr2 => Ok(Box::new(crate::backends::fsr2::Fsr2Interpolator::new()?)),
             #[cfg(not(feature = "fsr2"))]
             BackendKind::Fsr2 => Err(InterpolateError::InitFailed(
                 "fsr2 feature not enabled".into(),
             )),
-            #[cfg(feature = "nvidia-of")]
-            BackendKind::NvidiaOpticalFlow => {
-                let interp =
-                    crate::backends::nvidia_optical_flow::NvidiaOpticalFlowInterpolator::new()?;
-                Ok(Box::new(interp))
-            }
-            #[cfg(not(feature = "nvidia-of"))]
-            BackendKind::NvidiaOpticalFlow => Err(InterpolateError::InitFailed(
-                "nvidia-of feature not enabled".into(),
-            )),
             #[cfg(feature = "fsr3")]
-            BackendKind::Fsr3Hardware => {
-                let interp = crate::backends::fsr3::Fsr3Interpolator::new()?;
-                Ok(Box::new(interp))
+            BackendKind::Fsr3 => {
+                match crate::backends::fsr3::Fsr3Interpolator::new(
+                    1280, 720, 1920, 1080,
+                ) {
+                    Ok(backend) => Ok(Box::new(backend)),
+                    #[cfg(feature = "fsr2")]
+                    Err(e) => {
+                        eprintln!("warn: fsr3 init failed ({}), falling back to fsr2", e);
+                        Ok(Box::new(crate::backends::fsr2::Fsr2Interpolator::new()?))
+                    }
+                    #[cfg(not(feature = "fsr2"))]
+                    Err(e) => Err(e),
+                }
             }
             #[cfg(not(feature = "fsr3"))]
-            BackendKind::Fsr3Hardware => Err(InterpolateError::InitFailed(
+            BackendKind::Fsr3 => Err(InterpolateError::InitFailed(
                 "fsr3 feature not enabled".into(),
             )),
-            #[cfg(feature = "rife")]
-            BackendKind::Rife => {
-                let interp = crate::backends::rife::RifeInterpolator::from_default_path()?;
-                Ok(Box::new(interp))
-            }
-            #[cfg(not(feature = "rife"))]
-            BackendKind::Rife => Err(InterpolateError::InitFailed(
-                "rife feature not enabled".into(),
+            #[cfg(feature = "fsr2-rife")]
+            BackendKind::Fsr2Rife => Ok(Box::new(
+                crate::backends::fsr2_rife::Fsr2RifeInterpolator::new()?,
+            )),
+            #[cfg(not(feature = "fsr2-rife"))]
+            BackendKind::Fsr2Rife => Err(InterpolateError::InitFailed(
+                "fsr2-rife feature not enabled".into(),
             )),
         }
-    }
-
-    fn check_nvidia_of() -> bool {
-        #[cfg(feature = "nvidia-of")]
-        {
-            crate::backends::vulkan_context::VulkanContext::probe_nvidia_optical_flow()
-        }
-        #[cfg(not(feature = "nvidia-of"))]
-        false
     }
 
     fn check_fsr3() -> bool {
         #[cfg(feature = "fsr3")]
         {
-            crate::backends::vulkan_context::VulkanContext::probe_rdna3_plus()
+            crate::backends::vulkan_context::VulkanContext::is_vulkan_available()
         }
         #[cfg(not(feature = "fsr3"))]
         false
@@ -194,24 +146,6 @@ impl BackendDetector {
         #[cfg(not(feature = "fsr2"))]
         false
     }
-
-    fn check_wgpu() -> bool {
-        #[cfg(feature = "wgpu-backend")]
-        {
-            crate::backends::wgpu_optical_flow::is_available()
-        }
-        #[cfg(not(feature = "wgpu-backend"))]
-        false
-    }
-
-    fn check_rife() -> bool {
-        #[cfg(feature = "rife")]
-        {
-            crate::backends::rife::RifeInterpolator::from_default_path().is_ok()
-        }
-        #[cfg(not(feature = "rife"))]
-        false
-    }
 }
 
 #[cfg(test)]
@@ -221,11 +155,9 @@ mod tests {
     #[test]
     fn backend_kind_name() {
         assert_eq!(BackendKind::LinearBlend.name(), "linear-blend");
-        assert_eq!(BackendKind::WgpuOpticalFlow.name(), "wgpu-optical-flow");
         assert_eq!(BackendKind::Fsr2.name(), "fsr2");
-        assert_eq!(BackendKind::NvidiaOpticalFlow.name(), "nvidia-optical-flow");
-        assert_eq!(BackendKind::Fsr3Hardware.name(), "fsr3-hardware");
-        assert_eq!(BackendKind::Rife.name(), "rife");
+        assert_eq!(BackendKind::Fsr3.name(), "fsr3");
+        assert_eq!(BackendKind::Fsr2Rife.name(), "fsr2-rife");
     }
 
     #[test]
@@ -258,17 +190,12 @@ mod tests {
     #[test]
     fn create_disabled_feature_backends() {
         // Without features enabled, GPU backends return feature-not-enabled errors.
-        // With features enabled, these may succeed on systems with GPUs.
-        #[cfg(not(feature = "wgpu-backend"))]
-        assert!(BackendDetector::create_backend(BackendKind::WgpuOpticalFlow).is_err());
         #[cfg(not(feature = "fsr2"))]
         assert!(BackendDetector::create_backend(BackendKind::Fsr2).is_err());
-        #[cfg(not(feature = "nvidia-of"))]
-        assert!(BackendDetector::create_backend(BackendKind::NvidiaOpticalFlow).is_err());
         #[cfg(not(feature = "fsr3"))]
-        assert!(BackendDetector::create_backend(BackendKind::Fsr3Hardware).is_err());
-        #[cfg(not(feature = "rife"))]
-        assert!(BackendDetector::create_backend(BackendKind::Rife).is_err());
+        assert!(BackendDetector::create_backend(BackendKind::Fsr3).is_err());
+        #[cfg(not(feature = "fsr2-rife"))]
+        assert!(BackendDetector::create_backend(BackendKind::Fsr2Rife).is_err());
     }
 
     #[test]
@@ -280,8 +207,8 @@ mod tests {
 
     #[test]
     fn backend_kind_debug() {
-        let dbg = format!("{:?}", BackendKind::NvidiaOpticalFlow);
-        assert!(dbg.contains("NvidiaOpticalFlow"));
+        let dbg = format!("{:?}", BackendKind::Fsr3);
+        assert!(dbg.contains("Fsr3"));
     }
 
     #[test]
@@ -290,24 +217,12 @@ mod tests {
             "linear-blend".parse::<BackendKind>().unwrap(),
             BackendKind::LinearBlend
         );
-        assert_eq!(
-            "wgpu-optical-flow".parse::<BackendKind>().unwrap(),
-            BackendKind::WgpuOpticalFlow
-        );
         assert_eq!("fsr2".parse::<BackendKind>().unwrap(), BackendKind::Fsr2);
+        assert_eq!("fsr3".parse::<BackendKind>().unwrap(), BackendKind::Fsr3);
         assert_eq!(
-            "nvidia-optical-flow".parse::<BackendKind>().unwrap(),
-            BackendKind::NvidiaOpticalFlow
+            "fsr2-rife".parse::<BackendKind>().unwrap(),
+            BackendKind::Fsr2Rife
         );
-        assert_eq!(
-            "fsr3-hardware".parse::<BackendKind>().unwrap(),
-            BackendKind::Fsr3Hardware
-        );
-        assert_eq!(
-            "fsr3".parse::<BackendKind>().unwrap(),
-            BackendKind::Fsr3Hardware
-        );
-        assert_eq!("rife".parse::<BackendKind>().unwrap(), BackendKind::Rife);
     }
 
     #[test]

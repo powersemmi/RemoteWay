@@ -122,6 +122,12 @@ impl InterpolationManager {
         self.backend.latency_ms()
     }
 
+    /// Access the underlying interpolation backend (e.g. for spatial upscaling).
+    #[must_use]
+    pub fn backend(&self) -> &dyn FrameInterpolator {
+        &*self.backend
+    }
+
     /// Timestamp of the anchor frame, if available.
     #[must_use]
     pub fn anchor_timestamp_ns(&self) -> Option<u64> {

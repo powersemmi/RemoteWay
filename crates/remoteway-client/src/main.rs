@@ -114,17 +114,10 @@ async fn run(cli: cli::Cli) -> Result<()> {
         anyhow::bail!("transport closed before handshake");
     }
 
-    // Send target resolution if requested.
-    if let Some(res) = &cli.resolution {
-        let msg = pipeline::build_target_resolution(res.width, res.height);
-        if !sender.send_anchor(msg) {
-            tracing::warn!("failed to send target resolution frame (transport closed)");
-        }
-        info!(
-            width = res.width,
-            height = res.height,
-            "target resolution sent"
-        );
+    // Client-side upscale factor (applied after decompression).
+    let upscale_factor = cli.upscale;
+    if (upscale_factor - 1.0).abs() > f64::EPSILON {
+        info!(factor = upscale_factor, "client-side upscale enabled");
     }
 
     // Detect interpolation backend.
@@ -178,7 +171,14 @@ async fn run(cli: cli::Cli) -> Result<()> {
     // Receive + decompress + display loop (runs in tokio task).
     let recv_shutdown = shutdown.clone();
     let recv_task = tokio::spawn(async move {
-        pipeline::recv_decompress_loop(&mut transport, display, interpolation, recv_shutdown).await;
+        pipeline::recv_decompress_loop(
+            &mut transport,
+            display,
+            interpolation,
+            recv_shutdown,
+            upscale_factor,
+        )
+        .await;
     });
 
     // Wait for shutdown.
@@ -280,7 +280,8 @@ mod tests {
             compress: cli::CompressArg::Lz4,
             capture: cli::CaptureBackendArg::Auto,
             app_id: None,
-            resolution: None,
+            server_scale: 1.0,
+            upscale: 1.0,
             interpolation_backend: None,
         };
         let args = cli.ssh_command();

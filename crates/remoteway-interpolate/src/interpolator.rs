@@ -90,14 +90,100 @@ pub trait FrameInterpolator: Send + Sync {
     /// Returns [`InterpolateError::InvalidFactor`] if `t` is outside `0.0..=1.0`,
     /// [`InterpolateError::DimensionMismatch`] if frames differ in size, or
     /// [`InterpolateError::InterpolateFailed`] on GPU/compute errors.
-    fn interpolate(&self, a: &GpuFrame, b: &GpuFrame, t: f32)
+    fn interpolate(&mut self, a: &GpuFrame, b: &GpuFrame, t: f32)
     -> Result<GpuFrame, InterpolateError>;
+
+    /// Spatially upscale a single frame to `dst_w×dst_h`.
+    ///
+    /// Default implementation uses CPU Catmull-Rom bicubic. GPU backends
+    /// (FSR2, FSR3, DLSS) override this with hardware-accelerated upscaling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InterpolateError::InterpolateFailed`] on GPU/compute errors.
+    fn upscale(
+        &self,
+        src: &GpuFrame,
+        dst_w: u32,
+        dst_h: u32,
+    ) -> Result<GpuFrame, InterpolateError> {
+        cpu_bicubic_upscale(src, dst_w, dst_h)
+    }
 
     /// Estimated latency of a single interpolation call in milliseconds.
     fn latency_ms(&self) -> f32;
 
     /// Human-readable name of this backend.
     fn name(&self) -> &str;
+}
+
+/// CPU Catmull-Rom bicubic upscale.
+///
+/// Standalone implementation used as default for `FrameInterpolator::upscale()`
+/// and as fallback when GPU upscaling is unavailable.
+pub fn cpu_bicubic_upscale(
+    src: &GpuFrame,
+    dst_w: u32,
+    dst_h: u32,
+) -> Result<GpuFrame, InterpolateError> {
+    let dst_stride = dst_w * 4;
+    let mut data = vec![0u8; (dst_stride * dst_h) as usize];
+
+    fn cubic_weight(t: f64) -> [f64; 4] {
+        let t2 = t * t;
+        let t3 = t2 * t;
+        [
+            0.5 * (-t3 + 2.0 * t2 - t),
+            0.5 * (3.0 * t3 - 5.0 * t2 + 2.0),
+            0.5 * (-3.0 * t3 + 4.0 * t2 + t),
+            0.5 * (t3 - t2),
+        ]
+    }
+
+    for dy in 0..dst_h {
+        let sy = (dy as f64 + 0.5) * src.height as f64 / dst_h as f64 - 0.5;
+        let sy_floor = (sy.floor() as i32).max(0).min(src.height as i32 - 1);
+        let fy = sy - sy.floor();
+        let sy0 = (sy_floor - 1).max(0) as u32;
+        let sy1 = sy_floor as u32;
+        let sy2 = (sy_floor + 1).min(src.height as i32 - 1) as u32;
+        let sy3 = (sy_floor + 2).min(src.height as i32 - 1) as u32;
+        let wy = cubic_weight(fy);
+
+        let dst_row = (dy * dst_stride) as usize;
+        for dx in 0..dst_w {
+            let sx = (dx as f64 + 0.5) * src.width as f64 / dst_w as f64 - 0.5;
+            let sx_floor = (sx.floor() as i32).max(0).min(src.width as i32 - 1);
+            let fx = sx - sx.floor();
+            let sx0 = (sx_floor - 1).max(0) as u32;
+            let sx1 = sx_floor as u32;
+            let sx2 = (sx_floor + 1).min(src.width as i32 - 1) as u32;
+            let sx3 = (sx_floor + 2).min(src.width as i32 - 1) as u32;
+            let wx = cubic_weight(fx);
+
+            let di = dst_row + (dx * 4) as usize;
+            for c in 0..4 {
+                let mut acc = 0.0f64;
+                for (ky, &row_idx) in [sy0, sy1, sy2, sy3].iter().enumerate() {
+                    let row = (row_idx * src.stride) as usize;
+                    let cols = [sx0, sx1, sx2, sx3];
+                    for (kx, &col_idx) in cols.iter().enumerate() {
+                        let si = row + (col_idx * 4) as usize + c;
+                        acc += f64::from(src.data[si]) * wx[kx] * wy[ky];
+                    }
+                }
+                data[di + c] = acc.round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+
+    Ok(GpuFrame {
+        data,
+        width: dst_w,
+        height: dst_h,
+        stride: dst_stride,
+        timestamp_ns: src.timestamp_ns,
+    })
 }
 
 /// CPU-only linear blend interpolation (universal fallback).
@@ -109,7 +195,7 @@ pub struct LinearBlendInterpolator;
 
 impl FrameInterpolator for LinearBlendInterpolator {
     fn interpolate(
-        &self,
+        &mut self,
         a: &GpuFrame,
         b: &GpuFrame,
         t: f32,
@@ -217,7 +303,7 @@ mod tests {
 
     #[test]
     fn linear_blend_at_zero() {
-        let interp = LinearBlendInterpolator;
+        let mut interp = LinearBlendInterpolator;
         let a = make_frame(2, 2, 100, 0);
         let b = make_frame(2, 2, 200, 1000);
         let result = interp.interpolate(&a, &b, 0.0).unwrap();
@@ -230,7 +316,7 @@ mod tests {
 
     #[test]
     fn linear_blend_at_one() {
-        let interp = LinearBlendInterpolator;
+        let mut interp = LinearBlendInterpolator;
         let a = make_frame(2, 2, 100, 0);
         let b = make_frame(2, 2, 200, 1000);
         let result = interp.interpolate(&a, &b, 1.0).unwrap();
@@ -242,7 +328,7 @@ mod tests {
 
     #[test]
     fn linear_blend_at_half() {
-        let interp = LinearBlendInterpolator;
+        let mut interp = LinearBlendInterpolator;
         let a = make_frame(2, 2, 0, 0);
         let b = make_frame(2, 2, 200, 2000);
         let result = interp.interpolate(&a, &b, 0.5).unwrap();
@@ -255,7 +341,7 @@ mod tests {
 
     #[test]
     fn linear_blend_black_white() {
-        let interp = LinearBlendInterpolator;
+        let mut interp = LinearBlendInterpolator;
         let a = make_frame(4, 4, 0, 0);
         let b = make_frame(4, 4, 255, 16_666_667);
         let result = interp.interpolate(&a, &b, 0.25).unwrap();
@@ -267,7 +353,7 @@ mod tests {
 
     #[test]
     fn linear_blend_dimension_mismatch() {
-        let interp = LinearBlendInterpolator;
+        let mut interp = LinearBlendInterpolator;
         let a = make_frame(100, 100, 128, 0);
         let b = make_frame(200, 100, 128, 1000);
         let result = interp.interpolate(&a, &b, 0.5);
@@ -279,7 +365,7 @@ mod tests {
 
     #[test]
     fn linear_blend_invalid_factor() {
-        let interp = LinearBlendInterpolator;
+        let mut interp = LinearBlendInterpolator;
         let a = make_frame(2, 2, 128, 0);
         let b = make_frame(2, 2, 128, 1000);
 
@@ -295,7 +381,7 @@ mod tests {
 
     #[test]
     fn linear_blend_name_and_latency() {
-        let interp = LinearBlendInterpolator;
+        let mut interp = LinearBlendInterpolator;
         assert_eq!(interp.name(), "linear-blend");
         assert!(interp.latency_ms() > 0.0);
     }
@@ -308,7 +394,7 @@ mod tests {
 
     #[test]
     fn linear_blend_1080p() {
-        let interp = LinearBlendInterpolator;
+        let mut interp = LinearBlendInterpolator;
         let a = make_frame(1920, 1080, 128, 0);
         let b = make_frame(1920, 1080, 64, 16_666_667);
         let result = interp.interpolate(&a, &b, 0.5).unwrap();

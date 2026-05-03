@@ -1,3 +1,5 @@
+#![allow(clippy::undocumented_unsafe_blocks)]
+
 use std::mem::size_of;
 use std::sync::{Arc, Mutex};
 
@@ -10,6 +12,8 @@ use super::vulkan_context::VulkanContext;
 
 const MOTION_EST_SPV: &[u8] = include_bytes!("../shaders/motion_est.spv");
 const WARP_BLEND_SPV: &[u8] = include_bytes!("../shaders/warp_blend.spv");
+const EASU_UPSCALE_SPV: &[u8] = include_bytes!("../shaders/easu_upscale.spv");
+const RCAS_SPV: &[u8] = include_bytes!("../shaders/rcas.spv");
 
 /// Push constants shared between motion estimation and warp/blend shaders.
 #[repr(C)]
@@ -22,6 +26,15 @@ struct PushConstants {
     search_radius: u32,
 }
 
+/// Push constants for RCAS sharpening (2 × u32 + 1 × f32 = 12 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct RcasPush {
+    width: u32,
+    height: u32,
+    sharpness: f32,
+}
+
 /// Vulkan compute-based motion-compensated frame interpolation.
 ///
 /// Approximates AMD FSR 2 approach: block-matching motion estimation
@@ -31,14 +44,22 @@ pub struct Fsr2Interpolator {
     ctx: Arc<Mutex<VulkanContext>>,
     motion_pipeline: vk::Pipeline,
     warp_pipeline: vk::Pipeline,
+    easu_pipeline: vk::Pipeline,
+    rcas_pipeline: vk::Pipeline,
     motion_pipeline_layout: vk::PipelineLayout,
     warp_pipeline_layout: vk::PipelineLayout,
+    easu_pipeline_layout: vk::PipelineLayout,
+    rcas_pipeline_layout: vk::PipelineLayout,
     motion_desc_layout: vk::DescriptorSetLayout,
     warp_desc_layout: vk::DescriptorSetLayout,
+    easu_desc_layout: vk::DescriptorSetLayout,
+    rcas_desc_layout: vk::DescriptorSetLayout,
     desc_pool: vk::DescriptorPool,
     cached: Mutex<Option<Fsr2Resources>>,
     block_size: u32,
     search_radius: u32,
+    /// FSR SDK for high-quality spatial upscaling (optional).
+    native_upscaler: Option<super::fsr2_native::Fsr2NativeInterpolator>,
 }
 
 struct Fsr2Resources {
@@ -213,10 +234,108 @@ impl Fsr2Interpolator {
         // Cleanup shader modules (no longer needed after pipeline creation).
         // SAFETY: Both shader modules are valid handles and have been
         // consumed by pipeline creation — they can be safely destroyed.
+        // Cleanup shader modules.
         unsafe {
             guard.device.destroy_shader_module(motion_module, None);
             guard.device.destroy_shader_module(warp_module, None);
         }
+
+        // --- EASU pipeline (spatial upscaling) ---
+        let easu_spv = ash::util::read_spv(&mut std::io::Cursor::new(EASU_UPSCALE_SPV))
+            .map_err(|e| InterpolateError::InitFailed(format!("EASU SPIR-V: {e}")))?;
+        let easu_module_info = vk::ShaderModuleCreateInfo::default().code(&easu_spv);
+        let easu_module = unsafe { guard.device.create_shader_module(&easu_module_info, None) }
+            .map_err(|e| InterpolateError::InitFailed(format!("EASU shader: {e}")))?;
+
+        let easu_bindings = [
+            desc_binding(0, vk::DescriptorType::STORAGE_BUFFER),
+            desc_binding(1, vk::DescriptorType::STORAGE_BUFFER),
+        ];
+        let easu_desc_layout_info =
+            vk::DescriptorSetLayoutCreateInfo::default().bindings(&easu_bindings);
+        let easu_desc_layout = unsafe {
+            guard
+                .device
+                .create_descriptor_set_layout(&easu_desc_layout_info, None)
+        }
+        .map_err(|e| InterpolateError::InitFailed(format!("EASU desc layout: {e}")))?;
+
+        let easu_push = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::COMPUTE)
+            .offset(0)
+            .size(16); // 4 x u32: src_w, src_h, dst_w, dst_h
+
+        let easu_layout_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(std::slice::from_ref(&easu_desc_layout))
+            .push_constant_ranges(std::slice::from_ref(&easu_push));
+        let easu_pipeline_layout =
+            unsafe { guard.device.create_pipeline_layout(&easu_layout_info, None) }
+                .map_err(|e| InterpolateError::InitFailed(format!("EASU pipeline layout: {e}")))?;
+
+        let easu_stage = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .module(easu_module)
+            .name(c"main");
+        let easu_pipeline_info = vk::ComputePipelineCreateInfo::default()
+            .stage(easu_stage)
+            .layout(easu_pipeline_layout);
+        let easu_pipeline = unsafe {
+            guard.device.create_compute_pipelines(
+                vk::PipelineCache::null(),
+                std::slice::from_ref(&easu_pipeline_info),
+                None,
+            )
+        }
+        .map_err(|(_p, e)| InterpolateError::InitFailed(format!("EASU pipeline: {e}")))?[0];
+
+        unsafe { guard.device.destroy_shader_module(easu_module, None) };
+
+        // --- RCAS pipeline (sharpening) ---
+        let rcas_spv = ash::util::read_spv(&mut std::io::Cursor::new(RCAS_SPV))
+            .map_err(|e| InterpolateError::InitFailed(format!("RCAS SPIR-V: {e}")))?;
+        let rcas_module_info = vk::ShaderModuleCreateInfo::default().code(&rcas_spv);
+        let rcas_module = unsafe { guard.device.create_shader_module(&rcas_module_info, None) }
+            .map_err(|e| InterpolateError::InitFailed(format!("RCAS shader: {e}")))?;
+
+        let rcas_bindings = [desc_binding(0, vk::DescriptorType::STORAGE_BUFFER)];
+        let rcas_desc_layout_info =
+            vk::DescriptorSetLayoutCreateInfo::default().bindings(&rcas_bindings);
+        let rcas_desc_layout = unsafe {
+            guard
+                .device
+                .create_descriptor_set_layout(&rcas_desc_layout_info, None)
+        }
+        .map_err(|e| InterpolateError::InitFailed(format!("RCAS desc layout: {e}")))?;
+
+        let rcas_push = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::COMPUTE)
+            .offset(0)
+            .size(12); // 2 x u32 + 1 x f32: width, height, sharpness
+
+        let rcas_layout_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(std::slice::from_ref(&rcas_desc_layout))
+            .push_constant_ranges(std::slice::from_ref(&rcas_push));
+        let rcas_pipeline_layout =
+            unsafe { guard.device.create_pipeline_layout(&rcas_layout_info, None) }
+                .map_err(|e| InterpolateError::InitFailed(format!("RCAS pipeline layout: {e}")))?;
+
+        let rcas_stage = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .module(rcas_module)
+            .name(c"main");
+        let rcas_pipeline_info = vk::ComputePipelineCreateInfo::default()
+            .stage(rcas_stage)
+            .layout(rcas_pipeline_layout);
+        let rcas_pipeline = unsafe {
+            guard.device.create_compute_pipelines(
+                vk::PipelineCache::null(),
+                std::slice::from_ref(&rcas_pipeline_info),
+                None,
+            )
+        }
+        .map_err(|(_p, e)| InterpolateError::InitFailed(format!("RCAS pipeline: {e}")))?[0];
+
+        unsafe { guard.device.destroy_shader_module(rcas_module, None) };
 
         drop(guard);
 
@@ -224,14 +343,24 @@ impl Fsr2Interpolator {
             ctx,
             motion_pipeline,
             warp_pipeline,
+            easu_pipeline,
+            rcas_pipeline,
             motion_pipeline_layout,
             warp_pipeline_layout,
+            easu_pipeline_layout,
+            rcas_pipeline_layout,
             motion_desc_layout,
             warp_desc_layout,
+            easu_desc_layout,
+            rcas_desc_layout,
             desc_pool,
             cached: Mutex::new(None),
             block_size,
             search_radius,
+            native_upscaler: super::fsr2_native::Fsr2NativeInterpolator::new(
+                1920, 1080, 1920, 1080,
+            )
+            .ok(),
         })
     }
 
@@ -591,7 +720,7 @@ impl Fsr2Interpolator {
 
 impl FrameInterpolator for Fsr2Interpolator {
     fn interpolate(
-        &self,
+        &mut self,
         a: &GpuFrame,
         b: &GpuFrame,
         t: f32,
@@ -627,6 +756,201 @@ impl FrameInterpolator for Fsr2Interpolator {
         5.0
     }
 
+    fn upscale(
+        &self,
+        src: &GpuFrame,
+        dst_w: u32,
+        dst_h: u32,
+    ) -> Result<GpuFrame, InterpolateError> {
+        // Prefer real FSR SDK for spatial upscaling.
+        if let Some(ref native) = self.native_upscaler {
+            return native.upscale(src, dst_w, dst_h);
+        }
+        // Fall back to EASU+RCAS compute shaders.
+        let guard = self
+            .ctx
+            .lock()
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("lock: {e}")))?;
+
+        let src_size = (src.width * src.height * 4) as u64;
+        let dst_size = (dst_w * dst_h * 4) as u64;
+
+        // Source buffer (host-visible staging).
+        let (src_buf, src_mem) = guard.create_buffer(
+            src_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )?;
+        guard.upload_to_buffer(src_mem, &src.data)?;
+
+        // Destination buffer (device-local for compute, host-visible for readback).
+        let (dst_buf, dst_mem) = guard.create_buffer(
+            dst_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )?;
+
+        // Allocate descriptor sets.
+        let easu_desc_set = {
+            let alloc_info = vk::DescriptorSetAllocateInfo::default()
+                .descriptor_pool(self.desc_pool)
+                .set_layouts(std::slice::from_ref(&self.easu_desc_layout));
+            unsafe { guard.device.allocate_descriptor_sets(&alloc_info) }
+                .map_err(|e| InterpolateError::InterpolateFailed(format!("EASU desc set: {e}")))?[0]
+        };
+
+        // Write EASU descriptors.
+        let src_buf_info = vk::DescriptorBufferInfo::default()
+            .buffer(src_buf)
+            .offset(0)
+            .range(src_size);
+        let dst_buf_info = vk::DescriptorBufferInfo::default()
+            .buffer(dst_buf)
+            .offset(0)
+            .range(dst_size);
+        let easu_writes = [
+            vk::WriteDescriptorSet::default()
+                .dst_set(easu_desc_set)
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(std::slice::from_ref(&src_buf_info)),
+            vk::WriteDescriptorSet::default()
+                .dst_set(easu_desc_set)
+                .dst_binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(std::slice::from_ref(&dst_buf_info)),
+        ];
+        unsafe { guard.device.update_descriptor_sets(&easu_writes, &[]) };
+
+        // Command buffer: EASU pass.
+        let cmd = guard.allocate_command_buffer()?;
+        let begin_info = vk::CommandBufferBeginInfo::default();
+        unsafe { guard.device.begin_command_buffer(cmd, &begin_info) }
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("begin cmd: {e}")))?;
+
+        let easu_push = [src.width, src.height, dst_w, dst_h];
+        unsafe {
+            guard
+                .device
+                .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.easu_pipeline);
+            guard.device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.easu_pipeline_layout,
+                0,
+                std::slice::from_ref(&easu_desc_set),
+                &[],
+            );
+            guard.device.cmd_push_constants(
+                cmd,
+                self.easu_pipeline_layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                bytemuck::cast_slice(&easu_push),
+            );
+            let groups_x = dst_w.div_ceil(16);
+            let groups_y = dst_h.div_ceil(16);
+            guard.device.cmd_dispatch(cmd, groups_x, groups_y, 1);
+        }
+
+        // RCAS pass: sharpen the upscaled result in-place.
+        let rcas_desc_set = {
+            let alloc_info = vk::DescriptorSetAllocateInfo::default()
+                .descriptor_pool(self.desc_pool)
+                .set_layouts(std::slice::from_ref(&self.rcas_desc_layout));
+            unsafe { guard.device.allocate_descriptor_sets(&alloc_info) }
+                .map_err(|e| InterpolateError::InterpolateFailed(format!("RCAS desc set: {e}")))?[0]
+        };
+        let rcas_buf_info = vk::DescriptorBufferInfo::default()
+            .buffer(dst_buf)
+            .offset(0)
+            .range(dst_size);
+        let rcas_writes = [vk::WriteDescriptorSet::default()
+            .dst_set(rcas_desc_set)
+            .dst_binding(0)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .buffer_info(std::slice::from_ref(&rcas_buf_info))];
+        unsafe { guard.device.update_descriptor_sets(&rcas_writes, &[]) };
+
+        // Barrier: EASU write → RCAS read.
+        let barrier = vk::MemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ);
+        unsafe {
+            guard.device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                std::slice::from_ref(&barrier),
+                &[],
+                &[],
+            );
+        }
+
+        let rcas_push = RcasPush {
+            width: dst_w,
+            height: dst_h,
+            sharpness: 0.5f32,
+        };
+        unsafe {
+            guard
+                .device
+                .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.rcas_pipeline);
+            guard.device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.rcas_pipeline_layout,
+                0,
+                std::slice::from_ref(&rcas_desc_set),
+                &[],
+            );
+            guard.device.cmd_push_constants(
+                cmd,
+                self.rcas_pipeline_layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                bytemuck::bytes_of(&rcas_push),
+            );
+            let groups_x = dst_w.div_ceil(16);
+            let groups_y = dst_h.div_ceil(16);
+            guard.device.cmd_dispatch(cmd, groups_x, groups_y, 1);
+
+            guard
+                .device
+                .end_command_buffer(cmd)
+                .map_err(|e| InterpolateError::InterpolateFailed(format!("end cmd: {e}")))?;
+        }
+
+        // Submit and read back.
+        guard.submit_and_wait(cmd)?;
+        let data = guard.read_from_buffer(dst_mem, dst_size as usize)?;
+
+        // Cleanup.
+        unsafe {
+            guard.device.destroy_buffer(src_buf, None);
+            guard.device.free_memory(src_mem, None);
+            guard.device.destroy_buffer(dst_buf, None);
+            guard.device.free_memory(dst_mem, None);
+            guard
+                .device
+                .free_descriptor_sets(self.desc_pool, &[easu_desc_set, rcas_desc_set]);
+            guard
+                .device
+                .free_command_buffers(guard.command_pool, &[cmd]);
+        }
+
+        drop(guard);
+
+        Ok(GpuFrame {
+            data,
+            width: dst_w,
+            height: dst_h,
+            stride: dst_w * 4,
+            timestamp_ns: src.timestamp_ns,
+        })
+    }
+
     fn name(&self) -> &str {
         "fsr2"
     }
@@ -650,6 +974,8 @@ impl Drop for Fsr2Interpolator {
             guard.device.destroy_descriptor_pool(self.desc_pool, None);
             guard.device.destroy_pipeline(self.motion_pipeline, None);
             guard.device.destroy_pipeline(self.warp_pipeline, None);
+            guard.device.destroy_pipeline(self.easu_pipeline, None);
+            guard.device.destroy_pipeline(self.rcas_pipeline, None);
             guard
                 .device
                 .destroy_pipeline_layout(self.motion_pipeline_layout, None);
@@ -658,10 +984,22 @@ impl Drop for Fsr2Interpolator {
                 .destroy_pipeline_layout(self.warp_pipeline_layout, None);
             guard
                 .device
+                .destroy_pipeline_layout(self.easu_pipeline_layout, None);
+            guard
+                .device
+                .destroy_pipeline_layout(self.rcas_pipeline_layout, None);
+            guard
+                .device
                 .destroy_descriptor_set_layout(self.motion_desc_layout, None);
             guard
                 .device
                 .destroy_descriptor_set_layout(self.warp_desc_layout, None);
+            guard
+                .device
+                .destroy_descriptor_set_layout(self.easu_desc_layout, None);
+            guard
+                .device
+                .destroy_descriptor_set_layout(self.rcas_desc_layout, None);
         }
     }
 }
@@ -722,7 +1060,7 @@ mod tests {
     #[test]
     #[ignore] // requires Vulkan
     fn fsr2_interpolate_small() {
-        let interp = Fsr2Interpolator::new().unwrap();
+        let mut interp = Fsr2Interpolator::new().unwrap();
         let a = GpuFrame::from_data(vec![0u8; 64 * 64 * 4], 64, 64, 256, 0);
         let b = GpuFrame::from_data(vec![128u8; 64 * 64 * 4], 64, 64, 256, 1000);
         let result = interp.interpolate(&a, &b, 0.5).unwrap();

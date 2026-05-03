@@ -30,25 +30,6 @@ pub fn build_handshake() -> Vec<u8> {
     wire
 }
 
-/// Build a `TargetResolution` message to tell the server to downscale to `width×height`.
-pub fn build_target_resolution(width: u32, height: u32) -> Vec<u8> {
-    use remoteway_proto::target_resolution::TargetResolutionPayload;
-
-    let payload = TargetResolutionPayload::new(width, height);
-    let hdr = FrameHeader::new(
-        0,
-        MsgType::TargetResolution,
-        flags::LAST_CHUNK,
-        TargetResolutionPayload::SIZE as u32,
-        0,
-    );
-
-    let mut wire = Vec::with_capacity(FrameHeader::SIZE + TargetResolutionPayload::SIZE);
-    wire.extend_from_slice(hdr.as_bytes());
-    wire.extend_from_slice(payload.as_bytes());
-    wire
-}
-
 /// Deserialize a frame payload from wire bytes using zerocopy.
 ///
 /// Returns (width, height, stride, `damage_regions`, `CompressedFrame`).
@@ -131,6 +112,7 @@ pub async fn recv_decompress_loop(
     mut display: DisplayThread,
     interpolation: Option<InterpolationManager>,
     shutdown: Arc<AtomicBool>,
+    upscale_factor: f64,
 ) {
     let mut previous_frame: Vec<u8> = Vec::new();
     let mut has_previous = false;
@@ -203,30 +185,83 @@ pub async fn recv_decompress_loop(
                     im.push_frame(gpu_frame);
                 }
 
+                // Try to generate an interpolated frame at the temporal midpoint.
+                let interpolated = interpolation.as_mut().and_then(|im| {
+                    im.interpolate(0.5).ok().flatten()
+                });
+
                 // Save as previous frame for next delta decode BEFORE moving into display.
                 previous_frame.clear();
                 previous_frame.extend_from_slice(&output);
                 has_previous = true;
 
-                // Convert DamageRect to display DamageRegion.
+                // Spatial upscaling: GPU backend if available, else CPU bicubic.
+                let do_upscale = (upscale_factor - 1.0).abs() > f64::EPSILON;
+                let (display_w, display_h, display_stride, display_data) = if do_upscale {
+                    let tw = (width as f64 * upscale_factor).round() as u32;
+                    let th = (height as f64 * upscale_factor).round() as u32;
+
+                    // Try GPU upscale via interpolation backend.
+                    let gpu_upscaled = interpolation.as_ref().and_then(|im| {
+                        let src = GpuFrame::from_data(
+                            output.clone(),
+                            width,
+                            height,
+                            stride,
+                            msg.header.timestamp_ns,
+                        );
+                        im.backend().upscale(&src, tw, th).ok()
+                    });
+
+                    if let Some(gpu_frame) = gpu_upscaled {
+                        debug!(
+                            src = format!("{}x{}", width, height),
+                            dst = format!("{}x{}", tw, th),
+                            backend = "gpu",
+                            "upscaling frame"
+                        );
+                        (
+                            gpu_frame.width,
+                            gpu_frame.height,
+                            gpu_frame.stride,
+                            gpu_frame.data,
+                        )
+                    } else {
+                        debug!(
+                            src = format!("{}x{}", width, height),
+                            dst = format!("{}x{}", tw, th),
+                            backend = "cpu",
+                            "upscaling frame"
+                        );
+                        let mut upscaled = Vec::new();
+                        let (uw, uh, us) =
+                            upscale_bicubic(&output, width, height, stride, tw, th, &mut upscaled);
+                        (uw, uh, us, upscaled)
+                    }
+                } else {
+                    (width, height, stride, output)
+                };
+
+                // Convert DamageRect to display DamageRegion, scaling if needed.
+                let scale_x = display_w as f64 / width as f64;
+                let scale_y = display_h as f64 / height as f64;
                 let display_damage: Vec<remoteway_display::DamageRegion> = regions
                     .iter()
                     .map(|r| remoteway_display::DamageRegion {
-                        x: r.x,
-                        y: r.y,
-                        width: r.width,
-                        height: r.height,
+                        x: (r.x as f64 * scale_x).round() as u32,
+                        y: (r.y as f64 * scale_y).round() as u32,
+                        width: (r.width as f64 * scale_x).round() as u32,
+                        height: (r.height as f64 * scale_y).round() as u32,
                     })
                     .collect();
 
-                // Move output into display frame (no extra clone).
                 let display_frame = DisplayFrame {
                     surface_id: { msg.header.stream_id },
-                    data: output,
+                    data: display_data,
                     damage: display_damage,
-                    width,
-                    height,
-                    stride,
+                    width: display_w,
+                    height: display_h,
+                    stride: display_stride,
                     timestamp_ns: msg.header.timestamp_ns,
                 };
 
@@ -235,6 +270,51 @@ pub async fn recv_decompress_loop(
                 }
                 frame_count += 1;
                 debug!(frame = frame_count, "frame displayed");
+
+                // If an interpolated frame was generated, upscale and display it.
+                if let Some(interp_frame) = interpolated {
+                    let (iw, ih, istride, idata) = if do_upscale {
+                        let tw = (interp_frame.width as f64 * upscale_factor).round() as u32;
+                        let th = (interp_frame.height as f64 * upscale_factor).round() as u32;
+                        let gpu_up = interpolation.as_ref().and_then(|im| {
+                            im.backend().upscale(&interp_frame, tw, th).ok()
+                        });
+                        if let Some(gpu) = gpu_up {
+                            (gpu.width, gpu.height, gpu.stride, gpu.data)
+                        } else {
+                            let mut upscaled = Vec::new();
+                            let (uw, uh, us) = upscale_bicubic(
+                                &interp_frame.data,
+                                interp_frame.width,
+                                interp_frame.height,
+                                interp_frame.stride,
+                                tw, th,
+                                &mut upscaled,
+                            );
+                            (uw, uh, us, upscaled)
+                        }
+                    } else {
+                        (interp_frame.width, interp_frame.height, interp_frame.stride, interp_frame.data)
+                    };
+
+                    let full_damage = vec![remoteway_display::DamageRegion {
+                        x: 0, y: 0,
+                        width: iw,
+                        height: ih,
+                    }];
+
+                    if !display.send_frame(DisplayFrame {
+                        surface_id: msg.header.stream_id,
+                        data: idata,
+                        damage: full_damage,
+                        width: iw,
+                        height: ih,
+                        stride: istride,
+                        timestamp_ns: interp_frame.timestamp_ns,
+                    }) {
+                        debug!("interpolated frame dropped (display queue full)");
+                    }
+                }
             }
             Ok(MsgType::Handshake) => {
                 debug!("received server handshake (late)");
@@ -275,6 +355,87 @@ pub async fn recv_decompress_loop(
     }
 
     display.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Client-side upscaling (Catmull-Rom bicubic interpolation)
+// ---------------------------------------------------------------------------
+
+/// Upscale a frame from `src_w×src_h` to `dst_w×dst_h` using Catmull-Rom bicubic filtering.
+///
+/// Uses a 4×4 kernel (16 samples per output pixel) for sharp, high-quality results.
+/// Writes into `dst` (cleared and resized internally). Returns `(new_width, new_height, new_stride)`.
+pub fn upscale_bicubic(
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    src_stride: u32,
+    dst_w: u32,
+    dst_h: u32,
+    dst: &mut Vec<u8>,
+) -> (u32, u32, u32) {
+    let dst_stride = dst_w * 4;
+    let total = (dst_stride * dst_h) as usize;
+    dst.clear();
+    dst.resize(total, 0);
+
+    /// Catmull-Rom cubic weight for sample offset `t` (0 = center-left, 1 = center-right).
+    #[inline]
+    fn cubic_weight(t: f64) -> [f64; 4] {
+        let t2 = t * t;
+        let t3 = t2 * t;
+        [
+            0.5 * (-t3 + 2.0 * t2 - t),        // sample at offset -1
+            0.5 * (3.0 * t3 - 5.0 * t2 + 2.0), // sample at offset 0
+            0.5 * (-3.0 * t3 + 4.0 * t2 + t),  // sample at offset +1
+            0.5 * (t3 - t2),                   // sample at offset +2
+        ]
+    }
+
+    for dy in 0..dst_h {
+        let sy = (dy as f64 + 0.5) * src_h as f64 / dst_h as f64 - 0.5;
+        let sy_floor = (sy.floor() as i32).max(0).min(src_h as i32 - 1);
+        let fy = sy - sy.floor();
+
+        // Clamp source row indices for bicubic kernel.
+        let sy0 = (sy_floor - 1).max(0) as u32;
+        let sy1 = sy_floor as u32;
+        let sy2 = (sy_floor + 1).min(src_h as i32 - 1) as u32;
+        let sy3 = (sy_floor + 2).min(src_h as i32 - 1) as u32;
+
+        let wy = cubic_weight(fy);
+        let dst_row = (dy * dst_stride) as usize;
+
+        for dx in 0..dst_w {
+            let sx = (dx as f64 + 0.5) * src_w as f64 / dst_w as f64 - 0.5;
+            let sx_floor = (sx.floor() as i32).max(0).min(src_w as i32 - 1);
+            let fx = sx - sx.floor();
+
+            let sx0 = (sx_floor - 1).max(0) as u32;
+            let sx1 = sx_floor as u32;
+            let sx2 = (sx_floor + 1).min(src_w as i32 - 1) as u32;
+            let sx3 = (sx_floor + 2).min(src_w as i32 - 1) as u32;
+
+            let wx = cubic_weight(fx);
+            let di = dst_row + (dx * 4) as usize;
+
+            for c in 0..4 {
+                // Convolve 4×4 kernel.
+                let mut acc = 0.0f64;
+                for (ky, &row_idx) in [sy0, sy1, sy2, sy3].iter().enumerate() {
+                    let row = (row_idx * src_stride) as usize;
+                    let sx = [sx0, sx1, sx2, sx3];
+                    for (kx, &col_idx) in sx.iter().enumerate() {
+                        let si = row + (col_idx * 4) as usize + c;
+                        acc += f64::from(src[si]) * wx[kx] * wy[ky];
+                    }
+                }
+                dst[di + c] = acc.round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+
+    (dst_w, dst_h, dst_stride)
 }
 
 #[cfg(test)]
@@ -414,22 +575,6 @@ mod tests {
     }
 
     #[test]
-    fn build_target_resolution_format() {
-        let data = build_target_resolution(1920, 1080);
-        assert_eq!(data.len(), 24); // FrameHeader(16) + TargetResolutionPayload(8)
-
-        let hdr = FrameHeader::ref_from_bytes(&data[..16]).unwrap();
-        assert_eq!(hdr.msg_type().unwrap(), MsgType::TargetResolution);
-        assert_eq!({ hdr.flags }, flags::LAST_CHUNK);
-        assert_eq!({ hdr.payload_len }, 8);
-
-        use remoteway_proto::target_resolution::TargetResolutionPayload;
-        let p = TargetResolutionPayload::ref_from_bytes(&data[16..24]).unwrap();
-        assert_eq!({ p.width }, 1920);
-        assert_eq!({ p.height }, 1080);
-    }
-
-    #[test]
     fn build_handshake_format() {
         let data = build_handshake();
         assert_eq!(data.len(), 24);
@@ -486,15 +631,6 @@ mod tests {
     }
 
     #[test]
-    fn build_target_resolution_zero_resets() {
-        let data = build_target_resolution(0, 0);
-        use remoteway_proto::target_resolution::TargetResolutionPayload;
-        let p = TargetResolutionPayload::ref_from_bytes(&data[16..24]).unwrap();
-        assert_eq!({ p.width }, 0);
-        assert_eq!({ p.height }, 0);
-    }
-
-    #[test]
     fn sequential_delta_frames_round_trip() {
         let w = 8u32;
         let h = 8u32;
@@ -518,5 +654,52 @@ mod tests {
 
             previous = output;
         }
+    }
+
+    // ── Upscaling tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn upscale_same_size_is_copy() {
+        let src: Vec<u8> = (0..16).map(|i| i as u8).collect();
+        let mut dst = Vec::new();
+        let (w, h, s) = upscale_bicubic(&src, 2, 2, 8, 2, 2, &mut dst);
+        assert_eq!((w, h, s), (2, 2, 8));
+        assert_eq!(dst, src);
+    }
+
+    #[test]
+    fn upscale_2x_bicubic() {
+        let src = vec![255u8; 2 * 2 * 4];
+        let mut dst = Vec::new();
+        let (w, h, s) = upscale_bicubic(&src, 2, 2, 8, 4, 4, &mut dst);
+        assert_eq!((w, h, s), (4, 4, 16));
+        assert_eq!(dst.len(), 4 * 4 * 4);
+        // Bicubic may over/undershoot at edges — allow small deviation.
+        for &px in &dst {
+            assert!(px >= 240, "px={px}");
+        }
+    }
+
+    #[test]
+    fn upscale_preserves_distinct_pixels() {
+        let mut src = Vec::new();
+        src.extend_from_slice(&[255u8, 0, 0, 255]);
+        src.extend_from_slice(&[0, 0, 255, 255]);
+        let mut dst = Vec::new();
+        upscale_bicubic(&src, 2, 1, 8, 4, 1, &mut dst);
+        // Leftmost should stay red-ish, rightmost blue-ish
+        assert!(dst[0] > 200);
+        assert!(dst[2] < 50);
+        assert!(dst[12] < 50);
+        assert!(dst[14] > 200);
+    }
+
+    #[test]
+    fn upscale_min_dimensions() {
+        let src = vec![128u8; 4];
+        let mut dst = Vec::new();
+        let (w, h, _) = upscale_bicubic(&src, 1, 1, 4, 8, 8, &mut dst);
+        assert_eq!((w, h), (8, 8));
+        assert_eq!(dst.len(), 8 * 8 * 4);
     }
 }

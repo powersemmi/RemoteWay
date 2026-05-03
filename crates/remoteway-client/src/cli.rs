@@ -34,25 +34,6 @@ impl CaptureBackendArg {
     }
 }
 
-/// Target resolution parsed from `WxH` string (e.g. `1920x1080`).
-#[derive(Debug, Clone, Copy)]
-pub struct Resolution {
-    pub width: u32,
-    pub height: u32,
-}
-
-fn parse_resolution(s: &str) -> Result<Resolution, String> {
-    let (w, h) = s
-        .split_once('x')
-        .ok_or_else(|| format!("expected WxH format, got '{s}'"))?;
-    let width: u32 = w.parse().map_err(|_| format!("invalid width '{w}'"))?;
-    let height: u32 = h.parse().map_err(|_| format!("invalid height '{h}'"))?;
-    if width == 0 || height == 0 {
-        return Err("width and height must be > 0".into());
-    }
-    Ok(Resolution { width, height })
-}
-
 fn parse_backend_kind(s: &str) -> Result<BackendKind, String> {
     s.parse()
 }
@@ -79,15 +60,20 @@ pub struct Cli {
     pub no_interpolate: bool,
 
     /// Interpolation backend to use (overrides auto-detection).
-    /// Available: linear-blend, wgpu-optical-flow, fsr2, nvidia-optical-flow, fsr3-hardware, rife
+    /// Auto order: fsr3 → fsr2 → linear-blend.
+    /// Available: fsr3, fsr2, fsr2-rife, linear-blend
     #[arg(long, value_parser = parse_backend_kind)]
     pub interpolation_backend: Option<BackendKind>,
 
-    /// Target resolution for server-side downscaling (`WxH`, e.g. 1920x1080).
-    /// The server will downscale captured frames before sending.
-    /// Omit to use native resolution.
-    #[arg(long, value_parser = parse_resolution)]
-    pub resolution: Option<Resolution>,
+    /// Server-side downscale factor forwarded to remoteway-server (0.1–1.0).
+    /// 1.0 = native, 0.5 = half resolution before compression.
+    #[arg(long, default_value = "1.0")]
+    pub server_scale: f64,
+
+    /// Client-side upscale factor applied after receiving (1.0–2.0).
+    /// 1.0 = display as-is, 2.0 = double the received frame size.
+    #[arg(long, default_value = "1.0")]
+    pub upscale: f64,
 
     /// Capture a specific window by `app_id` on the remote side
     /// (e.g. "org.mozilla.firefox"). Forwarded to remoteway-server as --app-id.
@@ -127,6 +113,12 @@ impl Cli {
         if let Some(ref app_id) = self.app_id {
             args.push("--app-id".to_string());
             args.push(app_id.clone());
+        }
+
+        // Forward server-side scale factor.
+        if (self.server_scale - 1.0).abs() > f64::EPSILON {
+            args.push("--scale".to_string());
+            args.push(self.server_scale.to_string());
         }
 
         if !self.command.is_empty() {
@@ -217,23 +209,42 @@ mod tests {
     }
 
     #[test]
-    fn resolution_flag() {
-        let cli = Cli::parse_from(["remoteway", "host", "--resolution", "1920x1080"]);
-        let res = cli.resolution.unwrap();
-        assert_eq!(res.width, 1920);
-        assert_eq!(res.height, 1080);
-    }
-
-    #[test]
-    fn resolution_default_none() {
+    fn server_scale_default() {
         let cli = Cli::parse_from(["remoteway", "host"]);
-        assert!(cli.resolution.is_none());
+        assert!((cli.server_scale - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn resolution_invalid_format() {
-        let result = Cli::try_parse_from(["remoteway", "host", "--resolution", "1920:1080"]);
-        assert!(result.is_err());
+    fn server_scale_custom() {
+        let cli = Cli::parse_from(["remoteway", "host", "--server-scale", "0.5"]);
+        assert!((cli.server_scale - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn upscale_default() {
+        let cli = Cli::parse_from(["remoteway", "host"]);
+        assert!((cli.upscale - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn upscale_custom() {
+        let cli = Cli::parse_from(["remoteway", "host", "--upscale", "1.5"]);
+        assert!((cli.upscale - 1.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ssh_command_forwards_scale() {
+        let cli = Cli::parse_from(["remoteway", "host", "--server-scale", "0.5"]);
+        let cmd = cli.ssh_command();
+        let scale_pos = cmd.iter().position(|s| s == "--scale").unwrap();
+        assert_eq!(cmd[scale_pos + 1], "0.5");
+    }
+
+    #[test]
+    fn ssh_command_no_scale_when_default() {
+        let cli = Cli::parse_from(["remoteway", "host"]);
+        let cmd = cli.ssh_command();
+        assert!(!cmd.contains(&"--scale".to_string()));
     }
 
     #[test]
@@ -256,10 +267,7 @@ mod tests {
     #[test]
     fn interpolation_backend_fsr3_alias() {
         let cli = Cli::parse_from(["remoteway", "host", "--interpolation-backend", "fsr3"]);
-        assert_eq!(
-            cli.interpolation_backend.unwrap(),
-            BackendKind::Fsr3Hardware
-        );
+        assert_eq!(cli.interpolation_backend.unwrap(), BackendKind::Fsr3);
     }
 
     #[test]

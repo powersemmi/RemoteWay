@@ -39,16 +39,22 @@ RemoteWay captures frames from the remote compositor, delta-encodes and compress
   - `libwayland-dev` (client + server)
   - `libwayland-protocols` (wlr + misc)
 
-Optional (for GNOME support, `--features gnome`):
-  - `libpipewire-0.3-dev`
-  - `libei-dev`
-
 ### Runtime
 
-- **Remote machine**: Wayland compositor (Sway, Hyprland, Niri, GNOME, KDE)
+- **Remote machine**: Wayland compositor (wlroot based, Niri, GNOME, KDE)
 - **Local machine**: Wayland compositor
 - SSH access to the remote machine
 - `remoteway-server` installed on the remote machine
+- **For portal capture**: `gst-plugin-pipewire` GStreamer plugin
+
+  ```sh
+  # Arch
+  sudo pacman -S gst-plugin-pipewire
+  # Fedora
+  sudo dnf install gstreamer1-plugin-pipewire
+  # Debian/Ubuntu
+  sudo apt install gstreamer1.0-pipewire
+  ```
 
 ## Installation
 
@@ -65,13 +71,31 @@ sudo install -m 755 target/release/remoteway-server /usr/local/bin/remoteway-ser
 
 The server binary must be in `$PATH` on the remote machine (or specify its path with `--server-bin`).
 
-### With GNOME support
+### With portal support
 
 ```bash
-cargo build --release --features gnome
+cargo build --release --features portal
 ```
 
-This enables xdg-desktop-portal screen capture and libei input injection for GNOME/Mutter.
+This enables the xdg-desktop-portal + `GStreamer` capture backend for GNOME and KDE.
+
+### With GPU interpolation backends
+
+```bash
+# All GPU backends
+cargo build --release --features gpu
+
+# Specific backends
+cargo build --release --features dlss      # NVIDIA DLSS (RTX 40-series+)
+cargo build --release --features fsr3      # AMD FSR 3 (RDNA3+)
+cargo build --release --features fsr2      # AMD FSR 2 (Vulkan)
+cargo build --release --features nvidia-of # NVIDIA Optical Flow
+
+# Everything (portal + all GPU backends + RIFE)
+cargo build --release --features all,portal
+```
+
+Auto-detection order: **dlss → fsr3 → fsr2 → cpu** (linear-blend fallback).
 
 ## Usage
 
@@ -105,9 +129,12 @@ Options:
   --no-interpolate             Disable frame interpolation
   --interpolation-backend <BACKEND>
                                Interpolation backend (overrides auto-detection)
-                               [linear-blend|wgpu-optical-flow|fsr2|fsr3|nvidia-optical-flow|rife]
-  --resolution <WxH>           Target resolution for server-side downscaling
-                               (e.g. 1920x1080). Omit for native resolution
+                               Auto order: dlss → fsr3-hardware → fsr2 → linear-blend
+                               [dlss|fsr3-hardware|fsr2|linear-blend|nvidia-optical-flow|wgpu-optical-flow|rife]
+  --server-scale <FACTOR>      Server-side downscale factor (0.1–1.0)
+                               1.0 = native, 0.5 = half [default: 1.0]
+  --upscale <FACTOR>           Client-side upscale factor (1.0–2.0)
+                               1.0 = as-is, 2.0 = double [default: 1.0]
   --app-id <APP_ID>            Capture a specific window by app_id on the
                                remote side (e.g. "org.mozilla.firefox")
   --server-bin <PATH>          Path to remoteway-server on remote host
@@ -159,6 +186,8 @@ Options:
   --app-id <APP_ID>            Capture a specific window by app_id
                                (e.g. "org.mozilla.firefox").
                                Mutually exclusive with --output
+  --scale <FACTOR>             Downscale factor before compression (0.1–1.0)
+                               1.0 = native, 0.5 = half [default: 1.0]
 ```
 
 ## Architecture
@@ -269,8 +298,8 @@ cargo bench -p remoteway-core
 |-----------|---------|-------|--------|
 | Sway | wlr-screencopy | wlr-virtual-pointer | Fully supported |
 | Hyprland | wlr-screencopy / ext-image-capture | wlr-virtual-pointer | Fully supported |
-| GNOME/Mutter | xdg-desktop-portal + PipeWire | libei | Requires `--features gnome` |
-| KDE Plasma | xdg-desktop-portal + PipeWire | libei | Requires `--features gnome` |
+| GNOME/Mutter | xdg-desktop-portal + PipeWire | libei | Requires `--features portal` + `gst-plugin-pipewire` |
+| KDE Plasma | xdg-desktop-portal + PipeWire | libei | Requires `--features portal` + `gst-plugin-pipewire` |
 | wlroots-based | Auto-detected | Auto-detected | Fully supported |
 
 ## Development

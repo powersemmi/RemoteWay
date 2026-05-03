@@ -1,0 +1,110 @@
+#version 450
+// AMD FSR1-style Edge-Adaptive Spatial Upsampling (EASU)
+// Simplified directional Lanczos-2 interpolation.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(push_constant) uniform PushConstants {
+    uint src_w;
+    uint src_h;
+    uint dst_w;
+    uint dst_h;
+} pc;
+
+layout(set = 0, binding = 0) readonly buffer SrcImage { uint src[]; };
+layout(set = 0, binding = 1) writeonly buffer DstImage { uint dst[]; };
+
+// Sample source pixel at integer coordinates (clamped).
+uint sample_src(int x, int y) {
+    x = clamp(x, 0, int(pc.src_w) - 1);
+    y = clamp(y, 0, int(pc.src_h) - 1);
+    return src[y * pc.src_w + x];
+}
+
+// Extract a channel from RGBA8 packed uint.
+float chan(uint pixel, int c) {
+    return float((pixel >> (c * 8u)) & 0xFFu) / 255.0;
+}
+
+// Pack 4 channels into RGBA8.
+uint pack(float r, float g, float b, float a) {
+    uint ur = uint(clamp(r, 0.0, 1.0) * 255.0 + 0.5);
+    uint ug = uint(clamp(g, 0.0, 1.0) * 255.0 + 0.5);
+    uint ub = uint(clamp(b, 0.0, 1.0) * 255.0 + 0.5);
+    uint ua = uint(clamp(a, 0.0, 1.0) * 255.0 + 0.5);
+    return ur | (ug << 8u) | (ub << 16u) | (ua << 24u);
+}
+
+// Lanczos-2 kernel: sin(pi*x)*sin(pi*x/2) / (pi*x)^2, for |x| < 2
+float lanczos2(float x) {
+    if (abs(x) < 0.001) return 1.0;
+    if (abs(x) >= 2.0) return 0.0;
+    float pix = 3.14159265359 * x;
+    return sin(pix) * sin(pix * 0.5) / (pix * pix) * 2.0;
+}
+
+void main() {
+    uint dx = gl_GlobalInvocationID.x;
+    uint dy = gl_GlobalInvocationID.y;
+    if (dx >= pc.dst_w || dy >= pc.dst_h) return;
+
+    // Map output pixel center to source coordinates.
+    float sx = (float(dx) + 0.5) * float(pc.src_w) / float(pc.dst_w) - 0.5;
+    float sy = (float(dy) + 0.5) * float(pc.src_h) / float(pc.dst_h) - 0.5;
+    int ix = int(floor(sx));
+    int iy = int(floor(sy));
+    float fx = sx - floor(sx);
+    float fy = sy - floor(sy);
+
+    // Detect edge direction using local gradient.
+    float gx = 0.0, gy = 0.0;
+    for (int j = -1; j <= 1; j++) {
+        for (int i = -1; i <= 1; i++) {
+            float l = chan(sample_src(ix + i, iy + j), 0) * 0.299 +
+                      chan(sample_src(ix + i, iy + j), 1) * 0.587 +
+                      chan(sample_src(ix + i, iy + j), 2) * 0.114;
+            gx += l * float(i);
+            gy += l * float(j);
+        }
+    }
+    float grad_len = length(vec2(gx, gy));
+    float dir_x, dir_y;
+    if (grad_len < 0.01) {
+        dir_x = 0.0; dir_y = 0.0;
+    } else {
+        dir_x = gx / grad_len;
+        dir_y = gy / grad_len;
+    }
+
+    // Directional Lanczos-2 interpolation along and across the edge.
+    float r = 0.0, g = 0.0, b = 0.0, a = 0.0;
+    float weight_sum = 0.0;
+
+    for (int j = -2; j <= 2; j++) {
+        for (int i = -2; i <= 2; i++) {
+            float offset_along = float(i) * dir_x + float(j) * dir_y;
+            float offset_across = -float(i) * dir_y + float(j) * dir_x;
+
+            // Wider kernel along edge, narrower across.
+            float w_along = lanczos2((offset_along + fx * dir_x + fy * dir_y) * 0.8);
+            float w_across = lanczos2((offset_across - fx * dir_y + fy * dir_x) * 1.2);
+
+            float w = w_along * w_across;
+            if (w != 0.0) {
+                uint p = sample_src(ix + i, iy + j);
+                r += chan(p, 0) * w;
+                g += chan(p, 1) * w;
+                b += chan(p, 2) * w;
+                a += chan(p, 3) * w;
+                weight_sum += w;
+            }
+        }
+    }
+
+    r /= max(weight_sum, 0.001);
+    g /= max(weight_sum, 0.001);
+    b /= max(weight_sum, 0.001);
+    a /= max(weight_sum, 0.001);
+
+    dst[dy * pc.dst_w + dx] = pack(r, g, b, a);
+}

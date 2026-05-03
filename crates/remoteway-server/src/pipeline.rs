@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 
 use anyhow::{Context, Result};
@@ -30,23 +30,6 @@ const SPIN_YIELD_THRESHOLD: u32 = 64;
 /// Send an anchor frame every N frames to prevent error accumulation
 /// and enable resync after packet loss.
 const ANCHOR_INTERVAL: u64 = 300;
-
-/// Pack width and height into a single `u64` for `AtomicU64` sharing.
-#[inline]
-fn pack_resolution(width: u32, height: u32) -> u64 {
-    ((width as u64) << 32) | (height as u64)
-}
-
-/// Unpack `(width, height)` from a packed `u64`. Returns `None` for 0 (= native).
-#[inline]
-fn unpack_resolution(packed: u64) -> Option<(u32, u32)> {
-    if packed == 0 {
-        return None;
-    }
-    let w = (packed >> 32) as u32;
-    let h = (packed & 0xFFFF_FFFF) as u32;
-    Some((w, h))
-}
 
 /// Nearest-neighbor downscale of an RGBA frame.
 ///
@@ -222,20 +205,15 @@ pub fn compress_send_loop(
     sender: TransportSender,
     _compress_arg: &CompressArg,
     shutdown: &AtomicBool,
-    target_resolution: &AtomicU64,
+    scale: f64,
 ) {
     let mut previous_frame: Vec<u8> = Vec::new();
     let mut is_first = true;
     let mut frame_count: u64 = 0;
     let mut empty_polls: u32 = 0;
-    // When true, the next frame must use full-frame damage because the
-    // compositor's damage regions are relative to a frame the client never
-    // received (dropped in transport or capture ring).
     let mut need_full_damage = false;
-    // Scratch buffer for downscaled frames (reused across iterations).
     let mut scaled_buf: Vec<u8> = Vec::new();
-    // Track the last applied target resolution to detect changes.
-    let mut last_target: u64 = 0;
+    let do_downscale = (scale - 1.0).abs() > f64::EPSILON;
 
     while !shutdown.load(Ordering::Acquire) {
         // Drain the capture ring to the LATEST frame. Intermediate frames
@@ -281,38 +259,23 @@ pub fn compress_send_loop(
             need_full_damage = true;
         }
 
-        // Check for target resolution change — force anchor on change.
-        let cur_target = target_resolution.load(Ordering::Relaxed);
-        if cur_target != last_target {
-            need_full_damage = true;
-            // Reset delta base so the first frame at the new resolution is clean.
-            previous_frame.clear();
-            last_target = cur_target;
-            debug!("target resolution changed, forcing anchor");
-        }
-
-        // Apply server-side downscaling if target resolution is set.
-        let (frame_data, frame_w, frame_h, frame_stride): (&[u8], u32, u32, u32) =
-            if let Some((tw, th)) = unpack_resolution(cur_target) {
-                if tw < frame.width || th < frame.height {
-                    // dst_stride is always tw * 4; computed explicitly below
-                    // for clarity rather than using the return value.
-                    let _ = downscale_nearest(
-                        &frame.data,
-                        frame.width,
-                        frame.height,
-                        frame.stride,
-                        tw,
-                        th,
-                        &mut scaled_buf,
-                    );
-                    (&scaled_buf, tw, th, tw * 4)
-                } else {
-                    (&frame.data, frame.width, frame.height, frame.stride)
-                }
-            } else {
-                (&frame.data, frame.width, frame.height, frame.stride)
-            };
+        // Apply server-side downscaling if scale < 1.0.
+        let (frame_data, frame_w, frame_h, frame_stride): (&[u8], u32, u32, u32) = if do_downscale {
+            let tw = (frame.width as f64 * scale).round() as u32;
+            let th = (frame.height as f64 * scale).round() as u32;
+            let _ = downscale_nearest(
+                &frame.data,
+                frame.width,
+                frame.height,
+                frame.stride,
+                tw,
+                th,
+                &mut scaled_buf,
+            );
+            (&scaled_buf, tw, th, tw * 4)
+        } else {
+            (&frame.data, frame.width, frame.height, frame.stride)
+        };
 
         // Periodic anchor frames for resync / error accumulation prevention.
         let force_anchor =
@@ -322,7 +285,7 @@ pub fn compress_send_loop(
 
         let regions: Vec<DamageRect> = if use_full_damage {
             vec![DamageRect::new(0, 0, frame_w, frame_h)]
-        } else if unpack_resolution(cur_target).is_some() {
+        } else if do_downscale {
             // When downscaling, compositor damage regions don't map cleanly —
             // use full-frame damage for correctness.
             vec![DamageRect::new(0, 0, frame_w, frame_h)]
@@ -415,7 +378,6 @@ pub async fn recv_dispatch_loop(
     transport: &mut remoteway_transport::ssh_transport::SshTransport,
     mut input_inject: InputInjectThread,
     shutdown: Arc<AtomicBool>,
-    target_resolution: Arc<AtomicU64>,
 ) {
     while !shutdown.load(Ordering::Acquire) {
         let msg = match transport.recv().await {
@@ -435,25 +397,6 @@ pub async fn recv_dispatch_loop(
                     && !input_inject.send(*event)
                 {
                     warn!("input inject queue full, event dropped");
-                }
-            }
-            Ok(MsgType::TargetResolution) => {
-                use remoteway_proto::target_resolution::TargetResolutionPayload;
-                if msg.payload.len() >= TargetResolutionPayload::SIZE
-                    && let Ok(tr) = TargetResolutionPayload::ref_from_bytes(
-                        &msg.payload[..TargetResolutionPayload::SIZE],
-                    )
-                {
-                    let w = tr.width;
-                    let h = tr.height;
-                    let packed = if w == 0 && h == 0 {
-                        info!("target resolution reset to native");
-                        0
-                    } else {
-                        info!(width = w, height = h, "target resolution set");
-                        pack_resolution(w, h)
-                    };
-                    target_resolution.store(packed, Ordering::Relaxed);
                 }
             }
             Ok(MsgType::Handshake) => {
@@ -477,18 +420,12 @@ pub fn spawn_compress_thread(
     sender: TransportSender,
     compress_arg: CompressArg,
     shutdown: Arc<AtomicBool>,
-    target_resolution: Arc<AtomicU64>,
+    scale: f64,
 ) -> Result<JoinHandle<()>> {
     let config = ThreadConfig::new(2, 0, "compress-send");
     config
         .spawn(move || {
-            compress_send_loop(
-                capture,
-                sender,
-                &compress_arg,
-                &shutdown,
-                &target_resolution,
-            );
+            compress_send_loop(capture, sender, &compress_arg, &shutdown, scale);
         })
         .context("failed to spawn compress-send thread")
 }
@@ -607,28 +544,6 @@ mod tests {
         use remoteway_proto::handshake::{HandshakePayload, capture_flags};
         let hs = HandshakePayload::ref_from_bytes(&data[16..24]).unwrap();
         assert_eq!({ hs.capture_flags }, capture_flags::EXT_IMAGE_CAPTURE);
-    }
-
-    #[test]
-    fn pack_unpack_round_trip() {
-        assert_eq!(
-            unpack_resolution(pack_resolution(1920, 1080)),
-            Some((1920, 1080))
-        );
-        assert_eq!(
-            unpack_resolution(pack_resolution(3840, 2160)),
-            Some((3840, 2160))
-        );
-        assert_eq!(unpack_resolution(pack_resolution(1, 1)), Some((1, 1)));
-        assert_eq!(
-            unpack_resolution(pack_resolution(u32::MAX, u32::MAX)),
-            Some((u32::MAX, u32::MAX))
-        );
-    }
-
-    #[test]
-    fn unpack_zero_is_none() {
-        assert_eq!(unpack_resolution(0), None);
     }
 
     #[test]

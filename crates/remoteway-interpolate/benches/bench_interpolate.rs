@@ -23,7 +23,7 @@ const RESOLUTIONS: &[(u32, u32, &str)] = &[
 // ---------------------------------------------------------------------------
 
 fn bench_linear_blend(c: &mut Criterion) {
-    let interp = LinearBlendInterpolator;
+    let mut interp = LinearBlendInterpolator;
 
     let mut group = c.benchmark_group("linear_blend");
     for &(w, h, label) in RESOLUTIONS {
@@ -41,7 +41,7 @@ fn bench_linear_blend(c: &mut Criterion) {
 }
 
 fn bench_linear_blend_latency(c: &mut Criterion) {
-    let interp = LinearBlendInterpolator;
+    let mut interp = LinearBlendInterpolator;
     let a = make_frame(1920, 1080, 0, 0);
     let b = make_frame(1920, 1080, 255, 16_666_667);
 
@@ -59,12 +59,12 @@ fn bench_linear_blend_latency(c: &mut Criterion) {
 // wgpu Optical Flow (GPU)
 // ---------------------------------------------------------------------------
 
-fn bench_wgpu_optical_flow(c: &mut Criterion) {
+fn bench_wgpu_optical_flow(_: &mut Criterion) {
     #[cfg(feature = "wgpu-backend")]
     {
         use remoteway_interpolate::backends::wgpu_optical_flow::WgpuOpticalFlowInterpolator;
 
-        let interp = match WgpuOpticalFlowInterpolator::new() {
+        let mut interp = match WgpuOpticalFlowInterpolator::new() {
             Ok(i) => i,
             Err(e) => {
                 eprintln!("wgpu: skipping — {e}");
@@ -87,20 +87,19 @@ fn bench_wgpu_optical_flow(c: &mut Criterion) {
         group.finish();
     }
     #[cfg(not(feature = "wgpu-backend"))]
-    {
-    }
+    {}
 }
 
 // ---------------------------------------------------------------------------
 // FSR2 (Vulkan compute)
 // ---------------------------------------------------------------------------
 
-fn bench_fsr2(c: &mut Criterion) {
+fn bench_fsr2(_: &mut Criterion) {
     #[cfg(feature = "fsr2")]
     {
         use remoteway_interpolate::backends::fsr2::Fsr2Interpolator;
 
-        let interp = match Fsr2Interpolator::new() {
+        let mut interp = match Fsr2Interpolator::new() {
             Ok(i) => i,
             Err(e) => {
                 eprintln!("fsr2: skipping — {e}");
@@ -123,20 +122,19 @@ fn bench_fsr2(c: &mut Criterion) {
         group.finish();
     }
     #[cfg(not(feature = "fsr2"))]
-    {
-    }
+    {}
 }
 
 // ---------------------------------------------------------------------------
 // FSR3 (Vulkan compute, RDNA3+ tuned)
 // ---------------------------------------------------------------------------
 
-fn bench_fsr3(c: &mut Criterion) {
+fn bench_fsr3(_: &mut Criterion) {
     #[cfg(feature = "fsr3")]
     {
         use remoteway_interpolate::backends::fsr3::Fsr3Interpolator;
 
-        let interp = match Fsr3Interpolator::new() {
+        let mut interp = match Fsr3Interpolator::new(1920, 1080, 1920, 1080) {
             Ok(i) => i,
             Err(e) => {
                 eprintln!("fsr3: skipping — {e}");
@@ -159,20 +157,19 @@ fn bench_fsr3(c: &mut Criterion) {
         group.finish();
     }
     #[cfg(not(feature = "fsr3"))]
-    {
-    }
+    {}
 }
 
 // ---------------------------------------------------------------------------
 // NVIDIA Optical Flow
 // ---------------------------------------------------------------------------
 
-fn bench_nvidia_of(c: &mut Criterion) {
+fn bench_nvidia_of(_: &mut Criterion) {
     #[cfg(feature = "nvidia-of")]
     {
         use remoteway_interpolate::backends::nvidia_optical_flow::NvidiaOpticalFlowInterpolator;
 
-        let interp = match NvidiaOpticalFlowInterpolator::new() {
+        let mut interp = match NvidiaOpticalFlowInterpolator::new() {
             Ok(i) => i,
             Err(e) => {
                 eprintln!("nvidia-of: skipping — {e}");
@@ -195,8 +192,7 @@ fn bench_nvidia_of(c: &mut Criterion) {
         group.finish();
     }
     #[cfg(not(feature = "nvidia-of"))]
-    {
-    }
+    {}
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +206,7 @@ fn bench_comparison_1080p(c: &mut Criterion) {
     let mut group = c.benchmark_group("comparison_1080p");
 
     {
-        let interp = LinearBlendInterpolator;
+        let mut interp = LinearBlendInterpolator;
         group.bench_function("linear_blend", |bench| {
             bench.iter(|| interp.interpolate(&a, &b, 0.5).unwrap());
         });
@@ -219,7 +215,7 @@ fn bench_comparison_1080p(c: &mut Criterion) {
     #[cfg(feature = "wgpu-backend")]
     {
         use remoteway_interpolate::backends::wgpu_optical_flow::WgpuOpticalFlowInterpolator;
-        if let Ok(interp) = WgpuOpticalFlowInterpolator::new() {
+        if let Ok(mut interp) = WgpuOpticalFlowInterpolator::new() {
             group.bench_function("wgpu_optical_flow", |bench| {
                 bench.iter(|| interp.interpolate(&a, &b, 0.5).unwrap());
             });
@@ -229,7 +225,7 @@ fn bench_comparison_1080p(c: &mut Criterion) {
     #[cfg(feature = "fsr2")]
     {
         use remoteway_interpolate::backends::fsr2::Fsr2Interpolator;
-        if let Ok(interp) = Fsr2Interpolator::new() {
+        if let Ok(mut interp) = Fsr2Interpolator::new() {
             group.bench_function("fsr2", |bench| {
                 bench.iter(|| interp.interpolate(&a, &b, 0.5).unwrap());
             });
@@ -239,7 +235,7 @@ fn bench_comparison_1080p(c: &mut Criterion) {
     #[cfg(feature = "fsr3")]
     {
         use remoteway_interpolate::backends::fsr3::Fsr3Interpolator;
-        if let Ok(interp) = Fsr3Interpolator::new() {
+        if let Ok(mut interp) = Fsr3Interpolator::new(1920, 1080, 1920, 1080) {
             group.bench_function("fsr3", |bench| {
                 bench.iter(|| interp.interpolate(&a, &b, 0.5).unwrap());
             });
@@ -249,7 +245,7 @@ fn bench_comparison_1080p(c: &mut Criterion) {
     #[cfg(feature = "nvidia-of")]
     {
         use remoteway_interpolate::backends::nvidia_optical_flow::NvidiaOpticalFlowInterpolator;
-        if let Ok(interp) = NvidiaOpticalFlowInterpolator::new() {
+        if let Ok(mut interp) = NvidiaOpticalFlowInterpolator::new() {
             group.bench_function("nvidia_optical_flow", |bench| {
                 bench.iter(|| interp.interpolate(&a, &b, 0.5).unwrap());
             });
@@ -270,7 +266,7 @@ fn bench_comparison_4k(c: &mut Criterion) {
     let mut group = c.benchmark_group("comparison_4K");
 
     {
-        let interp = LinearBlendInterpolator;
+        let mut interp = LinearBlendInterpolator;
         group.bench_function("linear_blend", |bench| {
             bench.iter(|| interp.interpolate(&a, &b, 0.5).unwrap());
         });
@@ -279,7 +275,7 @@ fn bench_comparison_4k(c: &mut Criterion) {
     #[cfg(feature = "wgpu-backend")]
     {
         use remoteway_interpolate::backends::wgpu_optical_flow::WgpuOpticalFlowInterpolator;
-        if let Ok(interp) = WgpuOpticalFlowInterpolator::new() {
+        if let Ok(mut interp) = WgpuOpticalFlowInterpolator::new() {
             group.bench_function("wgpu_optical_flow", |bench| {
                 bench.iter(|| interp.interpolate(&a, &b, 0.5).unwrap());
             });
@@ -289,7 +285,7 @@ fn bench_comparison_4k(c: &mut Criterion) {
     #[cfg(feature = "fsr2")]
     {
         use remoteway_interpolate::backends::fsr2::Fsr2Interpolator;
-        if let Ok(interp) = Fsr2Interpolator::new() {
+        if let Ok(mut interp) = Fsr2Interpolator::new() {
             group.bench_function("fsr2", |bench| {
                 bench.iter(|| interp.interpolate(&a, &b, 0.5).unwrap());
             });
@@ -299,7 +295,7 @@ fn bench_comparison_4k(c: &mut Criterion) {
     #[cfg(feature = "fsr3")]
     {
         use remoteway_interpolate::backends::fsr3::Fsr3Interpolator;
-        if let Ok(interp) = Fsr3Interpolator::new() {
+        if let Ok(mut interp) = Fsr3Interpolator::new(3840, 2160, 3840, 2160) {
             group.bench_function("fsr3", |bench| {
                 bench.iter(|| interp.interpolate(&a, &b, 0.5).unwrap());
             });
@@ -309,7 +305,7 @@ fn bench_comparison_4k(c: &mut Criterion) {
     #[cfg(feature = "nvidia-of")]
     {
         use remoteway_interpolate::backends::nvidia_optical_flow::NvidiaOpticalFlowInterpolator;
-        if let Ok(interp) = NvidiaOpticalFlowInterpolator::new() {
+        if let Ok(mut interp) = NvidiaOpticalFlowInterpolator::new() {
             group.bench_function("nvidia_optical_flow", |bench| {
                 bench.iter(|| interp.interpolate(&a, &b, 0.5).unwrap());
             });

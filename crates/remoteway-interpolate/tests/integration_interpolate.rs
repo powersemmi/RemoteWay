@@ -43,7 +43,7 @@ fn gpu_frame_same_dimensions_with_different_stride() {
 
 #[test]
 fn linear_blend_full_pipeline() {
-    let interp = LinearBlendInterpolator;
+    let mut interp = LinearBlendInterpolator;
     let a = make_frame(320, 240, 0, 0);
     let b = make_frame(320, 240, 200, 16_666_667);
 
@@ -61,7 +61,7 @@ fn linear_blend_full_pipeline() {
 
 #[test]
 fn linear_blend_preserves_extremes() {
-    let interp = LinearBlendInterpolator;
+    let mut interp = LinearBlendInterpolator;
     let black = make_frame(8, 8, 0, 0);
     let white = make_frame(8, 8, 255, 1000);
 
@@ -78,7 +78,7 @@ fn linear_blend_preserves_extremes() {
 
 #[test]
 fn linear_blend_monotonic() {
-    let interp = LinearBlendInterpolator;
+    let mut interp = LinearBlendInterpolator;
     let a = make_frame(4, 4, 0, 0);
     let b = make_frame(4, 4, 200, 1000);
 
@@ -98,7 +98,7 @@ fn linear_blend_monotonic() {
 
 #[test]
 fn linear_blend_timestamp_interpolation() {
-    let interp = LinearBlendInterpolator;
+    let mut interp = LinearBlendInterpolator;
     let a = make_frame(2, 2, 0, 1_000_000);
     let b = make_frame(2, 2, 0, 2_000_000);
 

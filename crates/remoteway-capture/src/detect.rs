@@ -64,16 +64,16 @@ pub fn detect_backend(output_name: Option<&str>) -> Result<Box<dyn CaptureBacken
                 tracing::info!("wlr-screencopy unavailable: {e}");
                 // If portal was our primary path and it failed with pipewiresrc,
                 // surface a specific actionable error.
-                if let Some(ref pe) = portal_error {
-                    if format!("{pe}").contains("pipewiresrc") {
-                        tracing::error!(
-                            "portal capture failed: `pipewiresrc` GStreamer element not found. \
+                if let Some(ref pe) = portal_error
+                    && format!("{pe}").contains("pipewiresrc")
+                {
+                    tracing::error!(
+                        "portal capture failed: `pipewiresrc` GStreamer element not found. \
                              Install the PipeWire GStreamer plugin:\n  \
                              Debian/Ubuntu:  sudo apt install gstreamer1.0-pipewire\n  \
                              Fedora:         sudo dnf install gstreamer1-plugin-pipewire\n  \
                              Arch:           sudo pacman -S gst-plugin-pipewire"
-                        );
-                    }
+                    );
                 }
             }
         }

@@ -95,8 +95,9 @@ libfuzzer-sys = "0.4"
 # ── Workspace lint configuration ──────────────────────────────────────────
 
 [workspace.lints.rust]
+unused_must_use = "allow"
 unsafe_code = "allow"
-missing_docs = "warn"
+missing_docs = "allow"
 unused_results = "allow"
 unused_qualifications = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }

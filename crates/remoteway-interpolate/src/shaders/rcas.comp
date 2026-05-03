@@ -1,0 +1,70 @@
+#version 450
+// AMD FSR1 Robust Contrast Adaptive Sharpening (RCAS)
+// Sharpens edges without ringing artifacts.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(push_constant) uniform PushConstants {
+    uint width;
+    uint height;
+    float sharpness;  // 0.0 = no sharpening, 1.0 = full
+} pc;
+
+layout(set = 0, binding = 0) buffer Image { uint pixels[]; };
+
+// Extract a channel from RGBA8.
+float chan(uint pixel, int c) {
+    return float((pixel >> (c * 8u)) & 0xFFu) / 255.0;
+}
+
+uint pack(float r, float g, float b, float a) {
+    uint ur = uint(clamp(r, 0.0, 1.0) * 255.0 + 0.5);
+    uint ug = uint(clamp(g, 0.0, 1.0) * 255.0 + 0.5);
+    uint ub = uint(clamp(b, 0.0, 1.0) * 255.0 + 0.5);
+    uint ua = uint(clamp(a, 0.0, 1.0) * 255.0 + 0.5);
+    return ur | (ug << 8u) | (ub << 16u) | (ua << 24u);
+}
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    if (x >= pc.width || y >= pc.height) return;
+
+    uint idx = y * pc.width + x;
+    uint left = (x > 0u) ? idx - 1u : idx;
+    uint right = (x < pc.width - 1u) ? idx + 1u : idx;
+    uint up = (y > 0u) ? idx - pc.width : idx;
+    uint down = (y < pc.height - 1u) ? idx + pc.width : idx;
+
+    for (int c = 0; c < 3; c++) {  // RGB only — don't sharpen alpha
+        float center = chan(pixels[idx], c);
+        float l = chan(pixels[left], c);
+        float r = chan(pixels[right], c);
+        float u = chan(pixels[up], c);
+        float d = chan(pixels[down], c);
+
+        // Find min/max of 3x3 neighborhood (clipped to avoid extremes).
+        float mn = min(min(min(l, r), min(u, d)), center);
+        float mx = max(max(max(l, r), max(u, d)), center);
+
+        // Compute local contrast.
+        float blur = (l + r + u + d) * 0.25;
+        float contrast = max(abs(center - blur) - 0.01, 0.0);
+
+        // Apply sharpening proportional to contrast.
+        float sharp = center + (center - blur) * pc.sharpness * contrast * 2.0;
+
+        // Clamp to prevent overshoot/undershoot.
+        sharp = clamp(sharp, mn, mx);
+
+        // Blend sharpened with original based on sharpness.
+        float result = mix(center, sharp, pc.sharpness);
+
+        // Write back (need to decode, modify channel, re-encode).
+        uint val = pixels[idx];
+        uint shift = uint(c * 8u);
+        uint mask = ~(0xFFu << shift);
+        uint new_ch = uint(result * 255.0 + 0.5) << shift;
+        pixels[idx] = (val & mask) | new_ch;
+    }
+}

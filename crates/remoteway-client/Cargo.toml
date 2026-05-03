@@ -35,6 +35,11 @@ tracy-client = { workspace = true, optional = true }
 
 [features]
 tracy = ["dep:tracy-client"]
+fsr2 = ["remoteway-interpolate/fsr2"]
+fsr3 = ["remoteway-interpolate/fsr3"]
+fsr2-rife = ["remoteway-interpolate/fsr2-rife"]
+gpu = ["fsr3", "fsr2"]
+all = ["gpu", "fsr2-rife"]
 
 [lints]
 workspace = true

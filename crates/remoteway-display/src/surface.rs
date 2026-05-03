@@ -821,7 +821,7 @@ mod tests {
         let result = WaylandDisplay::new();
         match result {
             Err(DisplayError::WaylandConnect(_)) => {} // expected
-            Err(other) => {
+            Err(_) => {
                 // Some environments might return a different error.
             }
             Ok(_) => panic!("expected error without WAYLAND_DISPLAY"),

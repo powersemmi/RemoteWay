@@ -7,7 +7,7 @@
 
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -274,18 +274,15 @@ async fn run(cli: cli::Cli) -> Result<()> {
         .context("failed to spawn input inject thread")?;
     info!("input inject thread started");
 
-    // Shared target resolution (packed: width << 32 | height). 0 = native.
-    let target_resolution = Arc::new(AtomicU64::new(0));
-
     // Spawn compress+send thread (Core 2).
     let compress_handle = pipeline::spawn_compress_thread(
         capture,
         sender,
         cli.compress.clone(),
         shutdown.clone(),
-        target_resolution.clone(),
+        cli.scale,
     )?;
-    info!("compress-send thread started");
+    info!(scale = cli.scale, "compress-send thread started");
 
     // Launch target application if not already launched above.
     if !auto_detect_child && !explicit_app_id_launch && !cli.command.is_empty() {
@@ -295,10 +292,8 @@ async fn run(cli: cli::Cli) -> Result<()> {
     // Receive loop: dispatch incoming messages (input events from client).
     // Also handles shutdown on transport disconnect.
     let recv_shutdown = shutdown.clone();
-    let recv_target_res = target_resolution.clone();
     let recv_task = tokio::spawn(async move {
-        pipeline::recv_dispatch_loop(&mut transport, input_inject, recv_shutdown, recv_target_res)
-            .await;
+        pipeline::recv_dispatch_loop(&mut transport, input_inject, recv_shutdown).await;
     });
 
     // Wait for shutdown signal or child process exit.
