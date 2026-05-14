@@ -1953,6 +1953,7 @@ dependencies = [
 name = "remoteway-transport"
 version = "0.0.1"
 dependencies = [
+ "bytes",
  "criterion",
  "proptest",
  "remoteway-core",

@@ -67,7 +67,7 @@ fn main() {
     b.file(out.join("ffx_assert.cpp"));
     b.file(out.join("ffx_breadcrumbs_list.cpp"));
     b.file(sdk.join("src/shared/ffx_object_management.cpp"));
-    b.file(std::path::PathBuf::from("tmp/ffx_vk_stubs.cpp"));
+    b.file(PathBuf::from("tmp/ffx_vk_stubs.cpp"));
     b.file(&fi_out);
     b.compile("ffx_frameinterpolation");
 

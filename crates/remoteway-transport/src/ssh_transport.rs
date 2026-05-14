@@ -224,7 +224,7 @@ mod tests {
         let cursor = std::io::Cursor::new(frame);
         let (mut transport, _task) = SshTransport::new(cursor, tokio::io::sink());
         let msg = transport.recv().await.unwrap();
-        assert_eq!(msg.payload, b"hello");
+        assert_eq!(msg.payload.as_ref(), b"hello");
     }
 
     #[tokio::test]
@@ -239,7 +239,7 @@ mod tests {
         client.sender().send_anchor(data);
 
         let msg = server.recv().await.unwrap();
-        assert_eq!(msg.payload, b"ping");
+        assert_eq!(msg.payload.as_ref(), b"ping");
     }
 
     #[tokio::test]
@@ -287,7 +287,7 @@ mod tests {
             SshTransport::new(std::io::Cursor::new(all), tokio::io::sink());
         for i in 0u8..5 {
             let msg = transport.recv().await.unwrap();
-            assert_eq!(msg.payload, &[i]);
+            assert_eq!(msg.payload.as_ref(), &[i]);
         }
     }
 

@@ -283,6 +283,7 @@ mod tests {
             server_scale: 1.0,
             upscale: 1.0,
             interpolation_backend: None,
+            capture_fps: 100,
         };
         let args = cli.ssh_command();
         assert!(args.iter().any(|a| a.as_str().contains("test.example.com")));

@@ -3,7 +3,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use remoteway_compress::delta::DamageRect;
-use remoteway_compress::pipeline::{CompressedFrame, decompress_frame};
+use remoteway_compress::pipeline::{CompressedFrame, decompress_frame_into};
+#[cfg(test)]
+use remoteway_compress::pipeline::decompress_frame;
 use remoteway_display::{DisplayFrame, DisplayThread};
 use remoteway_interpolate::{GpuFrame, InterpolationManager};
 use remoteway_proto::frame::{FrameMeta, WireRegion};
@@ -118,6 +120,9 @@ pub async fn recv_decompress_loop(
     let mut has_previous = false;
     let mut interpolation = interpolation;
     let mut frame_count: u64 = 0;
+    // Reusable delta scratch for decompress — output buffer is freshly
+    // allocated each frame because it is moved into DisplayFrame.
+    let mut delta_scratch: Vec<u8> = Vec::new();
 
     while !shutdown.load(Ordering::Acquire) {
         let msg = match transport.recv().await {
@@ -161,12 +166,13 @@ pub async fn recv_decompress_loop(
                     }
                 }
 
-                let mut output = Vec::new();
-                if let Err(e) = decompress_frame(
+                let mut output: Vec<u8> = Vec::new();
+                if let Err(e) = decompress_frame_into(
                     &compressed,
                     &previous_frame,
                     stride as usize,
                     &regions,
+                    &mut delta_scratch,
                     &mut output,
                 ) {
                     warn!("decompress failed: {e}");

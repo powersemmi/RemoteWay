@@ -45,6 +45,10 @@ fn capture_thread_with_mock_backend() {
             // Fill with frame number so we can verify later.
             data.iter_mut().for_each(|b| *b = self.count as u8);
 
+            // Pace mock frames so the capture loop's rate limiter
+            // (100 fps = 10 ms gap) lets each one through.
+            std::thread::sleep(std::time::Duration::from_millis(15));
+
             Ok(CapturedFrame {
                 data,
                 damage: vec![DamageRect::new(0, 0, w, h)],
@@ -71,12 +75,14 @@ fn capture_thread_with_mock_backend() {
         core_id: 0,
         sched_priority: 0,
         ring_capacity: 16,
+        capture_fps: 100,
     };
 
     let mut thread = CaptureThread::spawn(backend, config).unwrap();
 
-    // Wait for all frames to be produced.
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // Wait for all frames to be produced (10 × ~15ms backend sleep + slack
+    // for CI under load).
+    std::thread::sleep(std::time::Duration::from_millis(1000));
 
     let mut timestamps = Vec::new();
     while let Some(frame) = thread.try_recv() {
@@ -114,6 +120,8 @@ fn capture_thread_ring_overflow() {
             if count >= 20 {
                 return Err(CaptureError::SessionEnded);
             }
+            // Pace frames just past the 2 ms rate limiter (1000 fps capped to 500).
+            std::thread::sleep(std::time::Duration::from_millis(3));
             Ok(CapturedFrame {
                 data: vec![0u8; 16],
                 damage: vec![DamageRect::new(0, 0, 2, 2)],
@@ -137,6 +145,7 @@ fn capture_thread_ring_overflow() {
         core_id: 0,
         sched_priority: 0,
         ring_capacity: 2,
+        capture_fps: 1000,
     };
     let backend = Box::new(SlowConsumerBackend {
         produced: produced_clone,
@@ -144,8 +153,9 @@ fn capture_thread_ring_overflow() {
 
     let mut thread = CaptureThread::spawn(backend, config).unwrap();
 
-    // Don't consume — let the ring fill up and overflow.
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // Don't consume — let the ring fill up and overflow. 20 × 3ms = 60ms;
+    // give generous slack for CI under load.
+    std::thread::sleep(std::time::Duration::from_millis(500));
 
     // Producer should have tried to push 20 frames (then SessionEnded).
     assert!(produced.load(Ordering::Relaxed) >= 20);

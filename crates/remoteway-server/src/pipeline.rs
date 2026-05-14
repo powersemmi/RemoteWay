@@ -8,7 +8,7 @@ use remoteway_capture::ext_capture::{CaptureSource, ExtImageCaptureBackend};
 use remoteway_capture::screencopy::WlrScreencopyBackend;
 use remoteway_capture::thread::CaptureThread;
 use remoteway_compress::delta::DamageRect;
-use remoteway_compress::pipeline::{CompressedFrame, compress_frame};
+use remoteway_compress::pipeline::{CompressedFrame, compress_frame_into};
 use remoteway_core::thread_config::ThreadConfig;
 use remoteway_input::inject_thread::InputInjectThread;
 use remoteway_proto::frame::{FrameMeta, WireRegion};
@@ -210,6 +210,9 @@ pub fn compress_send_loop(
     let mut need_full_damage = false;
     let mut scaled_buf: Vec<u8> = Vec::new();
     let do_downscale = (scale - 1.0).abs() > f64::EPSILON;
+    // Reusable scratch buffers for the compress pipeline.
+    let mut delta_scratch: Vec<u8> = Vec::new();
+    let mut compressed = CompressedFrame::default();
 
     while !shutdown.load(Ordering::Acquire) {
         // Drain the capture ring to the LATEST frame. Intermediate frames
@@ -297,8 +300,14 @@ pub fn compress_send_loop(
             previous_frame.resize(frame_data.len(), 0);
         }
 
-        let compressed =
-            compress_frame(frame_data, &previous_frame, frame_stride as usize, &regions);
+        compress_frame_into(
+            frame_data,
+            &previous_frame,
+            frame_stride as usize,
+            &regions,
+            &mut delta_scratch,
+            &mut compressed,
+        );
 
         let payload =
             serialize_frame_payload(frame_w, frame_h, frame_stride, &regions, &compressed);
@@ -336,8 +345,16 @@ pub fn compress_send_loop(
             // Only advance the delta base when the frame actually reaches the
             // client. Otherwise the server's previous_frame diverges from the
             // client's, causing cumulative artifacts.
-            previous_frame.clear();
-            previous_frame.extend_from_slice(frame_data);
+            if do_downscale {
+                // scaled_buf is reused next iteration — copy is required.
+                previous_frame.clear();
+                previous_frame.extend_from_slice(&scaled_buf);
+            } else {
+                // Zero-copy: move the capture buffer into previous_frame.
+                // The old previous_frame's allocation goes back into `frame.data`,
+                // so the capture thread keeps a sized buffer too.
+                std::mem::swap(&mut previous_frame, &mut frame.data);
+            }
             need_full_damage = false;
         } else {
             warn!(frame = frame_count, "frame dropped (backpressure)");

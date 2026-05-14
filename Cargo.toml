@@ -32,6 +32,7 @@ zerocopy = { version = "0.8", features = ["derive"] }
 rtrb = "0.3"
 libc = "0.2"
 anyhow = "1"
+bytes = "1"
 
 # Async
 tokio = { version = "1", features = ["full"] }

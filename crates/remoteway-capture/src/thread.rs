@@ -160,7 +160,9 @@ fn capture_loop(
     );
 
     let result = (|| {
-        let mut last_push = std::time::Instant::now();
+        // Subtract one interval so the first captured frame is always pushed,
+        // not rate-limited away on cold start.
+        let mut last_push = std::time::Instant::now() - min_interval;
         loop {
             if stop_flag.load(Ordering::Acquire) {
                 backend.stop();
@@ -220,6 +222,9 @@ mod tests {
             if self.idx >= self.frames.len() {
                 return Err(CaptureError::SessionEnded);
             }
+            // Pace mock frames so the capture loop's rate limiter
+            // (default 100 fps = 10 ms gap) lets each one through.
+            std::thread::sleep(std::time::Duration::from_millis(15));
             let frame = CapturedFrame {
                 data: self.frames[self.idx].data.clone(),
                 damage: self.frames[self.idx].damage.clone(),
@@ -261,6 +266,7 @@ mod tests {
             core_id: 0,
             sched_priority: 0,
             ring_capacity: 8,
+            capture_fps: 100,
         };
 
         let mut thread = CaptureThread::spawn(backend, config).unwrap();

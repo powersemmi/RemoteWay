@@ -149,7 +149,10 @@ mod tests {
     fn ssh_command_basic() {
         let cli = Cli::parse_from(["remoteway", "user@host"]);
         let cmd = cli.ssh_command();
-        assert_eq!(cmd, vec!["ssh", "user@host", "remoteway-server"]);
+        assert_eq!(
+            cmd,
+            vec!["ssh", "user@host", "remoteway-server", "--capture-fps", "100"]
+        );
     }
 
     #[test]
@@ -158,7 +161,15 @@ mod tests {
         let cmd = cli.ssh_command();
         assert_eq!(
             cmd,
-            vec!["ssh", "host", "remoteway-server", "--", "firefox"]
+            vec![
+                "ssh",
+                "host",
+                "remoteway-server",
+                "--capture-fps",
+                "100",
+                "--",
+                "firefox"
+            ]
         );
     }
 
@@ -175,7 +186,14 @@ mod tests {
         let cmd = cli.ssh_command();
         assert_eq!(
             cmd,
-            vec!["ssh", "-p 2222", "host", "/usr/bin/remoteway-server"]
+            vec![
+                "ssh",
+                "-p 2222",
+                "host",
+                "/usr/bin/remoteway-server",
+                "--capture-fps",
+                "100"
+            ]
         );
     }
 

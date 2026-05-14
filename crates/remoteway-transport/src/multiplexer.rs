@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use bytes::{Bytes, BytesMut};
 use remoteway_proto::ProtoError;
 use remoteway_proto::header::FrameHeader;
 use thiserror::Error;
@@ -30,7 +31,10 @@ pub struct IncomingMessage {
     /// The frame header (`msg_type`, `flags`, `stream_id`, etc.).
     pub header: FrameHeader,
     /// The reassembled payload bytes.
-    pub payload: Vec<u8>,
+    ///
+    /// Single-chunk messages share the parser's underlying allocation
+    /// (zero-copy `BytesMut::split_to`); only multi-chunk reassembly copies.
+    pub payload: Bytes,
 }
 
 /// Serializes a [`FrameHeader`] + payload into `dst`.
@@ -43,10 +47,13 @@ pub fn encode_frame(header: &FrameHeader, payload: &[u8], dst: &mut Vec<u8>) {
 ///
 /// Call [`StreamParser::push`] with incoming bytes; it will return any
 /// complete [`IncomingMessage`]s found in the buffer.
+///
+/// Uses `BytesMut` so single-chunk payloads are emitted as zero-copy
+/// `Bytes` views into the parser's allocation.
 pub struct StreamParser {
-    buf: Vec<u8>,
+    buf: BytesMut,
     /// In-progress reassembly of chunked payloads, keyed by `stream_id`.
-    chunks: HashMap<u16, Vec<u8>>,
+    chunks: HashMap<u16, BytesMut>,
 }
 
 impl StreamParser {
@@ -54,7 +61,7 @@ impl StreamParser {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            buf: Vec::with_capacity(64 * 1024),
+            buf: BytesMut::with_capacity(64 * 1024),
             chunks: HashMap::new(),
         }
     }
@@ -81,18 +88,19 @@ impl StreamParser {
                 break;
             }
 
-            let payload = self.buf[FrameHeader::SIZE..total].to_vec();
-            // INTENTIONAL: drain returns an iterator we don't need; the side-effect of
-            // removing consumed bytes from the buffer is all we care about.
-            let _drained = self.buf.drain(..total);
-            // Drop the Drain iterator immediately so the mutable borrow on `self.buf`
-            // is released before `self.reassemble` below.
-            drop(_drained);
-
             // Validate msg_type before accepting.
             // INTENTIONAL: we only care about the validation side-effect;
             // the `MsgType` discriminant is already embedded in `hdr`.
             let _msg_type = hdr.msg_type()?;
+
+            // Zero-copy: split_to advances the buffer pointer; freeze() turns
+            // the carved-out chunk into an immutable `Bytes` that shares the
+            // underlying allocation. No memcpy of the payload.
+            let mut frame_bytes = self.buf.split_to(total);
+            // Drop the header bytes from the front of `frame_bytes`; the
+            // remaining bytes are the payload.
+            let _ = frame_bytes.split_to(FrameHeader::SIZE);
+            let payload = frame_bytes.freeze();
 
             let msg = self.reassemble(hdr, payload)?;
             if let Some(m) = msg {
@@ -107,29 +115,38 @@ impl StreamParser {
     fn reassemble(
         &mut self,
         hdr: FrameHeader,
-        payload: Vec<u8>,
+        payload: Bytes,
     ) -> Result<Option<IncomingMessage>, MultiplexerError> {
         use remoteway_proto::header::flags;
 
         let stream_id = { hdr.stream_id };
         let is_last = hdr.flags & flags::LAST_CHUNK != 0;
 
-        if hdr.flags & flags::LAST_CHUNK != 0
+        if is_last
             && !self.chunks.contains_key(&stream_id)
             && payload.len() == { hdr.payload_len } as usize
         {
-            // Single-chunk message — fast path, no copy.
+            // Single-chunk message — fast path, zero-copy.
             return Ok(Some(IncomingMessage {
                 header: hdr,
                 payload,
             }));
         }
 
-        let buf = self.chunks.entry(stream_id).or_default();
+        // Multi-chunk: must accumulate. Preallocate generously on first
+        // chunk to avoid repeated realloc'ation when the rest arrive.
+        let buf = self
+            .chunks
+            .entry(stream_id)
+            .or_insert_with(|| BytesMut::with_capacity(payload.len() * 2));
         buf.extend_from_slice(&payload);
 
         if is_last {
-            let full_payload = self.chunks.remove(&stream_id).unwrap_or_default();
+            let full_payload = self
+                .chunks
+                .remove(&stream_id)
+                .unwrap_or_default()
+                .freeze();
             Ok(Some(IncomingMessage {
                 header: hdr,
                 payload: full_payload,
@@ -171,7 +188,7 @@ mod tests {
         let data = make_frame(1, MsgType::FrameUpdate, flags::LAST_CHUNK, b"hello");
         let msgs = p.push(&data).unwrap();
         assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].payload, b"hello");
+        assert_eq!(msgs[0].payload.as_ref(), b"hello");
     }
 
     #[test]
@@ -208,7 +225,7 @@ mod tests {
         assert!(msgs.is_empty());
         let msgs = p.push(&data[mid..]).unwrap();
         assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].payload, b"abcdef");
+        assert_eq!(msgs[0].payload.as_ref(), b"abcdef");
     }
 
     #[test]
@@ -222,7 +239,7 @@ mod tests {
         assert!(msgs.is_empty());
         msgs = p.push(&chunk2).unwrap();
         assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].payload, b"part1-part2");
+        assert_eq!(msgs[0].payload.as_ref(), b"part1-part2");
     }
 
     #[test]
@@ -240,7 +257,7 @@ mod tests {
 
         let msgs = p.push(&all).unwrap();
         assert_eq!(msgs.len(), 2);
-        let payloads: Vec<_> = msgs.iter().map(|m| m.payload.clone()).collect();
+        let payloads: Vec<Vec<u8>> = msgs.iter().map(|m| m.payload.to_vec()).collect();
         assert!(payloads.contains(&b"a1-a2".to_vec()));
         assert!(payloads.contains(&b"b1-b2".to_vec()));
     }
@@ -294,7 +311,7 @@ mod tests {
         for sid in 0..32u16 {
             let expected = format!("s{sid}-1-s{sid}-2");
             assert!(
-                msgs.iter().any(|m| m.payload == expected.as_bytes()),
+                msgs.iter().any(|m| m.payload.as_ref() == expected.as_bytes()),
                 "missing reassembled message for stream {sid}"
             );
         }
@@ -310,7 +327,7 @@ mod tests {
             total_msgs.extend(msgs);
         }
         assert_eq!(total_msgs.len(), 1);
-        assert_eq!(total_msgs[0].payload, b"payload");
+        assert_eq!(total_msgs[0].payload.as_ref(), b"payload");
     }
 
     #[test]

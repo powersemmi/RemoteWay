@@ -186,9 +186,22 @@ impl CaptureBackend for WlrScreencopyBackend {
         // Event handlers only store format info, they do NOT create the pool or
         // call copy. This prevents queueing pool creation and copy in the same
         // flush (compositor needs to process the pool fd first).
-        while !self.state.buffer_done && !self.state.frame_failed {
-            let dispatched = self.event_queue.blocking_dispatch(&mut self.state)?;
-            tracing::trace!(dispatched, "screencopy phase 1: blocking_dispatch");
+        let frame_timeout = std::time::Duration::from_secs(1);
+        while !self.state.buffer_done && !self.state.frame_failed && !self.state.stopped {
+            match crate::wayland_io::dispatch_with_deadline(
+                &self._conn,
+                &mut self.event_queue,
+                &mut self.state,
+                frame_timeout,
+            )? {
+                crate::wayland_io::DispatchOutcome::Dispatched => {}
+                crate::wayland_io::DispatchOutcome::TimedOut => {
+                    frame.destroy();
+                    return Err(CaptureError::CaptureFailed(
+                        "phase1 timeout: BufferDone not received within 1s".into(),
+                    ));
+                }
+            }
         }
 
         if self.state.frame_failed {
@@ -266,15 +279,32 @@ impl CaptureBackend for WlrScreencopyBackend {
         frame.copy(pool.active_buffer());
         self.state.buffer_attached = true;
 
-        // Phase 2: dispatch until Ready or Failed.
-        while !self.state.frame_ready && !self.state.frame_failed {
-            let dispatched = self.event_queue.blocking_dispatch(&mut self.state)?;
-            tracing::trace!(dispatched, "screencopy phase 2: blocking_dispatch");
+        // Phase 2: dispatch until Ready or Failed (bounded).
+        while !self.state.frame_ready && !self.state.frame_failed && !self.state.stopped {
+            match crate::wayland_io::dispatch_with_deadline(
+                &self._conn,
+                &mut self.event_queue,
+                &mut self.state,
+                frame_timeout,
+            )? {
+                crate::wayland_io::DispatchOutcome::Dispatched => {}
+                crate::wayland_io::DispatchOutcome::TimedOut => {
+                    frame.destroy();
+                    return Err(CaptureError::CaptureFailed(
+                        "phase2 timeout: frame not Ready within 1s".into(),
+                    ));
+                }
+            }
         }
 
         // Frame object is single-shot — destroy regardless of outcome.
         let frame_failed = self.state.frame_failed;
+        let stopped = self.state.stopped;
         frame.destroy();
+
+        if stopped {
+            return Err(CaptureError::SessionEnded);
+        }
 
         if frame_failed {
             return Err(CaptureError::CaptureFailed(

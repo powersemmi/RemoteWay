@@ -6,6 +6,7 @@ use crate::stats::{FrameStats, StageTimer};
 
 /// Output of the compression pipeline for one frame.
 #[must_use]
+#[derive(Default)]
 pub struct CompressedFrame {
     /// Concatenated compressed region blobs.
     pub data: Vec<u8>,
@@ -17,58 +18,113 @@ pub struct CompressedFrame {
     pub stats: FrameStats,
 }
 
-/// Encode and compress damaged regions of a frame.
+impl CompressedFrame {
+    /// Clear all per-frame state, retaining underlying allocations for reuse.
+    pub fn reset(&mut self) {
+        self.data.clear();
+        self.region_offsets.clear();
+        self.region_sizes.clear();
+        self.stats = FrameStats::default();
+    }
+}
+
+/// Encode and compress damaged regions of a frame, reusing caller-provided buffers.
+///
+/// `delta_scratch` and `out` are cleared and refilled in-place; their existing
+/// capacity is preserved, so steady-state operation performs no allocations.
 ///
 /// `current` and `previous` must be the same length (width × height × 4 bytes for RGBA).
 /// `stride` is the number of bytes per row (`width * 4`).
-pub fn compress_frame(
+pub fn compress_frame_into(
     current: &[u8],
     previous: &[u8],
     stride: usize,
     regions: &[DamageRect],
-) -> CompressedFrame {
+    delta_scratch: &mut Vec<u8>,
+    out: &mut CompressedFrame,
+) {
     #[cfg(feature = "tracy")]
     let _zone = tracy_client::span!("compress_frame");
 
+    out.reset();
+    delta_scratch.clear();
+
     let encode_timer = StageTimer::start();
-    let mut delta = Vec::with_capacity(current.len() / 4);
-    let original_bytes = delta_encode_simd(current, previous, stride, regions, &mut delta);
+    let original_bytes = delta_encode_simd(current, previous, stride, regions, delta_scratch);
     let encode_time = encode_timer.elapsed();
 
     let compress_timer = StageTimer::start();
-    let mut data = Vec::new();
-    let mut region_offsets = Vec::with_capacity(regions.len());
-    let mut region_sizes = Vec::with_capacity(regions.len());
+    out.region_offsets.reserve(regions.len());
+    out.region_sizes.reserve(regions.len());
 
     // Compress each region independently (could be parallelised via rayon later).
     let mut delta_offset = 0;
     for rect in regions {
         let row_bytes = rect.width as usize * 4;
         let region_len = row_bytes * rect.height as usize;
-        let region_delta = &delta[delta_offset..delta_offset + region_len];
+        let region_delta = &delta_scratch[delta_offset..delta_offset + region_len];
         let compressed = compress_region(region_delta);
-        region_offsets.push(data.len());
-        region_sizes.push(compressed.len());
-        data.extend_from_slice(&compressed);
+        out.region_offsets.push(out.data.len());
+        out.region_sizes.push(compressed.len());
+        out.data.extend_from_slice(&compressed);
         delta_offset += region_len;
     }
     let compress_time = compress_timer.elapsed();
 
-    let compressed_bytes = data.len();
-    CompressedFrame {
-        data,
-        region_offsets,
-        region_sizes,
-        stats: FrameStats {
-            original_bytes,
-            compressed_bytes,
-            encode_time,
-            compress_time,
-        },
-    }
+    out.stats = FrameStats {
+        original_bytes,
+        compressed_bytes: out.data.len(),
+        encode_time,
+        compress_time,
+    };
 }
 
-/// Decompress and reconstruct a frame from a [`CompressedFrame`] and the previous frame.
+/// Convenience wrapper: allocate fresh scratch + output buffers and compress.
+///
+/// Prefer [`compress_frame_into`] in steady-state pipelines to avoid per-frame
+/// allocations.
+pub fn compress_frame(
+    current: &[u8],
+    previous: &[u8],
+    stride: usize,
+    regions: &[DamageRect],
+) -> CompressedFrame {
+    let mut scratch = Vec::with_capacity(current.len() / 4);
+    let mut out = CompressedFrame::default();
+    compress_frame_into(current, previous, stride, regions, &mut scratch, &mut out);
+    out
+}
+
+/// Decompress and reconstruct a frame, reusing caller-provided scratch.
+///
+/// `delta_scratch` is cleared and refilled; its existing capacity is preserved.
+/// `output` is resized to `previous.len()` and filled in-place.
+pub fn decompress_frame_into(
+    compressed: &CompressedFrame,
+    previous: &[u8],
+    stride: usize,
+    regions: &[DamageRect],
+    delta_scratch: &mut Vec<u8>,
+    output: &mut Vec<u8>,
+) -> Result<(), CompressError> {
+    output.resize(previous.len(), 0);
+
+    delta_scratch.clear();
+    for (i, _rect) in regions.iter().enumerate() {
+        let start = compressed.region_offsets[i];
+        let end = start + compressed.region_sizes[i];
+        let blob = &compressed.data[start..end];
+        let region_delta = decompress_region(blob)?;
+        delta_scratch.extend_from_slice(&region_delta);
+    }
+
+    delta_decode(delta_scratch, previous, stride, regions, output);
+    Ok(())
+}
+
+/// Convenience wrapper around [`decompress_frame_into`].
+///
+/// Prefer the `_into` variant in steady-state pipelines.
 pub fn decompress_frame(
     compressed: &CompressedFrame,
     previous: &[u8],
@@ -76,19 +132,8 @@ pub fn decompress_frame(
     regions: &[DamageRect],
     output: &mut Vec<u8>,
 ) -> Result<(), CompressError> {
-    output.resize(previous.len(), 0);
-
-    let mut delta = Vec::new();
-    for (i, _rect) in regions.iter().enumerate() {
-        let start = compressed.region_offsets[i];
-        let end = start + compressed.region_sizes[i];
-        let blob = &compressed.data[start..end];
-        let region_delta = decompress_region(blob)?;
-        delta.extend_from_slice(&region_delta);
-    }
-
-    delta_decode(&delta, previous, stride, regions, output);
-    Ok(())
+    let mut scratch = Vec::new();
+    decompress_frame_into(compressed, previous, stride, regions, &mut scratch, output)
 }
 
 #[cfg(test)]

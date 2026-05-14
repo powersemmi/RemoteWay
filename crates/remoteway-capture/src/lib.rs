@@ -50,3 +50,4 @@ pub mod screencopy;
 pub mod shm;
 pub mod thread;
 pub mod toplevel;
+mod wayland_io;

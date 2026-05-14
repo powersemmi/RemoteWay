@@ -18,6 +18,7 @@ tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+bytes.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

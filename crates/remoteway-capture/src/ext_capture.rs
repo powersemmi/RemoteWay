@@ -3,7 +3,7 @@
 //! Modern Wayland screen capture protocol. Supports output capture, toplevel
 //! (per-window) capture, and toplevel discovery via `ext-foreign-toplevel-list-v1`.
 
-use tracing::{info, trace, warn};
+use tracing::{trace, warn};
 use wayland_client::protocol::{wl_buffer, wl_output, wl_registry, wl_shm, wl_shm_pool};
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
 
@@ -381,15 +381,34 @@ impl CaptureBackend for ExtImageCaptureBackend {
         // Trigger capture.
         frame.capture();
 
-        // Dispatch until ready or failed.
-        while !self.state.frame_ready && !self.state.frame_failed {
-            let dispatched = self.event_queue.blocking_dispatch(&mut self.state)?;
-            tracing::trace!(dispatched, "blocking_dispatch processed events");
+        // Dispatch until ready or failed, but bounded so we don't hang
+        // forever if the compositor silently drops the frame event.
+        // 1s is generous for a single frame at any reasonable framerate.
+        let frame_timeout = std::time::Duration::from_secs(1);
+        while !self.state.frame_ready && !self.state.frame_failed && !self.state.stopped {
+            match crate::wayland_io::dispatch_with_deadline(
+                &self._conn,
+                &mut self.event_queue,
+                &mut self.state,
+                frame_timeout,
+            )? {
+                crate::wayland_io::DispatchOutcome::Dispatched => {}
+                crate::wayland_io::DispatchOutcome::TimedOut => {
+                    frame.destroy();
+                    return Err(CaptureError::CaptureFailed(
+                        "frame timeout: compositor did not produce a frame within 1s".into(),
+                    ));
+                }
+            }
         }
 
         // Destroy the frame object — otherwise the compositor rejects
         // a subsequent create_frame as "duplicate frame".
         frame.destroy();
+
+        if self.state.stopped {
+            return Err(CaptureError::SessionEnded);
+        }
 
         if self.state.frame_failed {
             return Err(CaptureError::CaptureFailed(
@@ -465,13 +484,12 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ExtCaptureState {
             version,
         } = event
         {
-            eprintln!("WAYLAND GLOBAL: name={name} interface={interface} version={version}");
             trace!(%name, %interface, %version, "wayland global");
             if interface.starts_with("ext_")
                 || interface.starts_with("wlr_")
                 || interface.starts_with("zwlr_")
             {
-                info!(%name, %interface, %version, "relevant wayland global");
+                trace!(%name, %interface, %version, "relevant wayland global");
             }
             match interface.as_str() {
                 "wl_shm" => {

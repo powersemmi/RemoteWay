@@ -95,7 +95,10 @@ impl PortalBackend {
     /// Returns an error if D-Bus / portal / `PipeWire` / `GStreamer` is unavailable.
     pub fn new() -> Result<Self, CaptureError> {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), CaptureError>>();
-        let (frame_tx, frame_rx) = mpsc::channel(16);
+        // Keep the channel shallow: backpressure should land in `appsink`
+        // (which we configure with `max-buffers=2 drop=true`), not pile up
+        // additional frames in this Tokio MPSC.
+        let (frame_tx, frame_rx) = mpsc::channel(2);
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_clone = stop_flag.clone();
 
@@ -387,7 +390,16 @@ impl PortalBackend {
 
         let appsink = gstreamer::ElementFactory::make("appsink")
             .property("name", "appsink")
+            // sync=false: deliver as fast as possible, no clock pacing.
             .property("sync", false)
+            // max-buffers=2 + drop=true: cap internal queue at 2 buffers and
+            // drop the oldest when full. Keeps latency bounded and prevents
+            // backpressure from stalling pipewiresrc / the compositor.
+            .property("max-buffers", 2u32)
+            .property("drop", true)
+            // We pull via try_pull_sample(); disable signal emission to save
+            // overhead on every buffer.
+            .property("emit-signals", false)
             .build()
             .map_err(|e| CaptureError::CaptureFailed(format!("failed to create appsink: {e}")))?;
 
@@ -422,38 +434,24 @@ impl PortalBackend {
         let buf_size = data.len() as u32;
         const BYTES_PER_PIXEL: u32 = 4; // BGRx
 
-        // Read dimensions from caps if available, otherwise infer from buffer.
-        let caps = sample.caps();
-        let caps_w = caps
-            .as_ref()
-            .and_then(|c| c.structure(0).and_then(|s| s.get::<i32>("width").ok()))
-            .unwrap_or(0);
-        let caps_h = caps
-            .as_ref()
-            .and_then(|c| c.structure(0).and_then(|s| s.get::<i32>("height").ok()))
-            .unwrap_or(0);
-        let caps_stride = caps
-            .as_ref()
-            .and_then(|c| c.structure(0).and_then(|s| s.get::<i32>("stride").ok()))
-            .unwrap_or(0);
-
-        let (width, height, stride) = if caps_w > 0 && caps_h > 0 {
-            let s = if caps_stride > 0 {
-                caps_stride as u32
-            } else {
-                caps_w as u32 * BYTES_PER_PIXEL
-            };
-            (caps_w as u32, caps_h as u32, s)
+        // Authoritative source for width/height/stride is `GstVideoInfo`
+        // parsed from caps. `stride` is **not** a field on `video/x-raw`
+        // caps — it lives on the per-plane VideoInfo (and on per-buffer
+        // GstVideoMeta when present). For DMA-BUF-backed buffers the
+        // stride is typically padded to 256/512 bytes; reading `width*4`
+        // would produce a "staircase" image.
+        let (width, height, stride) = if let Some(caps) = sample.caps()
+            && let Ok(info) = gstreamer_video::VideoInfo::from_caps(caps)
+        {
+            let w = info.width();
+            let h = info.height();
+            let s = info.stride().first().copied().unwrap_or((w * BYTES_PER_PIXEL) as i32);
+            (w, h, s.max(0) as u32)
         } else {
-            // appsink caps often lack dimensions; estimate from buffer size.
-            let s = if caps_stride > 0 {
-                caps_stride as u32
-            } else {
-                buf_size
-            }; // assume single row
-            let h = if buf_size > s { buf_size / s } else { 1 };
-            let w = s / BYTES_PER_PIXEL;
-            (w, h, s)
+            // No caps at all (shouldn't happen with our pipeline). Treat
+            // the whole buffer as one row so downstream doesn't crash.
+            let w = buf_size / BYTES_PER_PIXEL;
+            (w, 1, buf_size)
         };
 
         let pixel_data = data.to_vec();
@@ -571,8 +569,10 @@ mod tests {
         assert_eq!(load_restore_token().as_deref(), Some(token));
         let _ = std::fs::remove_dir_all(&dir);
         if let Some(v) = prev {
+            // SAFETY: test-only, single-threaded under ENV_LOCK.
             unsafe { std::env::set_var("XDG_CACHE_HOME", v) };
         } else {
+            // SAFETY: test-only, single-threaded under ENV_LOCK.
             unsafe { std::env::remove_var("XDG_CACHE_HOME") };
         }
     }
