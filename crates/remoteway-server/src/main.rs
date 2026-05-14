@@ -284,8 +284,13 @@ async fn run(cli: cli::Cli) -> Result<()> {
         cli.compress.clone(),
         shutdown.clone(),
         cli.scale,
+        cli.downscale_filter,
     )?;
-    info!(scale = cli.scale, "compress-send thread started");
+    info!(
+        scale = cli.scale,
+        downscale_filter = ?cli.downscale_filter,
+        "compress-send thread started"
+    );
 
     // Launch target application if not already launched above.
     if !auto_detect_child && !explicit_app_id_launch && !cli.command.is_empty() {

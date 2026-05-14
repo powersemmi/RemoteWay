@@ -1,10 +1,38 @@
 use clap::Parser;
 use remoteway_interpolate::backend::BackendKind;
 
-#[derive(Clone, Debug, clap::ValueEnum)]
+#[derive(Clone, Debug, clap::ValueEnum, PartialEq, Eq)]
 pub enum CompressArg {
+    /// No compression — frames travel as raw bytes. Use on loopback or
+    /// fast LAN where CPU spent on LZ4/zstd is the real bottleneck.
+    /// Server must be started with `--compress none` too (matched
+    /// out-of-band; there is no in-band negotiation of the codec).
+    None,
+    /// Fast LZ4 block compression (default).
     Lz4,
+    /// Higher-ratio zstd compression.
     Zstd,
+}
+
+impl CompressArg {
+    /// Project to the runtime [`CompressorKind`] used by the receive
+    /// pipeline. Must match the server's `--compress` flag.
+    pub fn to_kind(&self) -> remoteway_compress::compressor::CompressorKind {
+        match self {
+            CompressArg::None => remoteway_compress::compressor::CompressorKind::None,
+            CompressArg::Lz4 => remoteway_compress::compressor::CompressorKind::Lz4,
+            CompressArg::Zstd => remoteway_compress::compressor::CompressorKind::Zstd,
+        }
+    }
+
+    /// String value as the server's clap parser expects it.
+    pub fn as_server_arg(&self) -> &'static str {
+        match self {
+            CompressArg::None => "none",
+            CompressArg::Lz4 => "lz4",
+            CompressArg::Zstd => "zstd",
+        }
+    }
 }
 
 /// Mirrors `remoteway_server::cli::CaptureBackendArg`; forwarded to the server
@@ -58,6 +86,12 @@ pub struct Cli {
     /// Disable frame interpolation
     #[arg(long, default_value = "false")]
     pub no_interpolate: bool,
+
+    /// Show an FPS counter overlay in the top-left corner.
+    /// Counts real frames received from the server (interpolated frames
+    /// inherit the same number, since they're synthesized between reals).
+    #[arg(long, default_value = "false")]
+    pub debug: bool,
 
     /// Interpolation backend to use (overrides auto-detection).
     /// Auto order: fsr3 → fsr2 → linear-blend.
@@ -123,6 +157,15 @@ impl Cli {
         // Forward capture FPS limit.
         args.push("--capture-fps".to_string());
         args.push(self.capture_fps.to_string());
+
+        // Forward the compressor choice — server and client decode the wire
+        // payload with the same algorithm and there is no in-band
+        // negotiation. Default lz4 is implicit on both sides; skip the flag
+        // to keep the SSH command tidy.
+        if !matches!(self.compress, CompressArg::Lz4) {
+            args.push("--compress".to_string());
+            args.push(self.compress.as_server_arg().to_string());
+        }
 
         // Forward server-side scale factor.
         if (self.server_scale - 1.0).abs() > f64::EPSILON {

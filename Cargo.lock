@@ -1916,6 +1916,7 @@ dependencies = [
  "half",
  "libloading",
  "thiserror 2.0.18",
+ "tracing",
  "wgpu",
 ]
 
@@ -1936,6 +1937,7 @@ dependencies = [
  "clap",
  "libc",
  "mimalloc",
+ "rayon",
  "remoteway-capture",
  "remoteway-compress",
  "remoteway-core",

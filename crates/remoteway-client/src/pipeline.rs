@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use anyhow::Result;
 use remoteway_compress::delta::DamageRect;
@@ -15,6 +16,8 @@ use remoteway_proto::resize::ResizePayload;
 use remoteway_transport::ssh_transport::TransportSender;
 use tracing::{debug, info, warn};
 use zerocopy::{FromBytes, IntoBytes};
+
+use crate::fps_overlay;
 
 /// Build the client handshake payload.
 pub fn build_handshake() -> Vec<u8> {
@@ -115,6 +118,8 @@ pub async fn recv_decompress_loop(
     interpolation: Option<InterpolationManager>,
     shutdown: Arc<AtomicBool>,
     upscale_factor: f64,
+    debug: bool,
+    compressor_kind: remoteway_compress::compressor::CompressorKind,
 ) {
     let mut previous_frame: Vec<u8> = Vec::new();
     let mut has_previous = false;
@@ -123,6 +128,12 @@ pub async fn recv_decompress_loop(
     // Reusable delta scratch for decompress — output buffer is freshly
     // allocated each frame because it is moved into DisplayFrame.
     let mut delta_scratch: Vec<u8> = Vec::new();
+    // FPS counter — EMA over instantaneous inter-frame intervals.
+    // Counts real frames only; interpolated frames inherit the same value.
+    // First sample seeds the EMA so the very first overlay is meaningful.
+    let mut last_frame_at: Option<Instant> = None;
+    let mut fps_ema: f32 = 0.0;
+    const FPS_ALPHA: f32 = 0.15;
 
     while !shutdown.load(Ordering::Acquire) {
         let msg = match transport.recv().await {
@@ -174,6 +185,7 @@ pub async fn recv_decompress_loop(
                     &regions,
                     &mut delta_scratch,
                     &mut output,
+                    compressor_kind,
                 ) {
                     warn!("decompress failed: {e}");
                     continue;
@@ -255,7 +267,7 @@ pub async fn recv_decompress_loop(
                 // Convert DamageRect to display DamageRegion, scaling if needed.
                 let scale_x = display_w as f64 / width as f64;
                 let scale_y = display_h as f64 / height as f64;
-                let display_damage: Vec<remoteway_display::DamageRegion> = regions
+                let mut display_damage: Vec<remoteway_display::DamageRegion> = regions
                     .iter()
                     .map(|r| remoteway_display::DamageRegion {
                         x: (r.x as f64 * scale_x).round() as u32,
@@ -264,6 +276,44 @@ pub async fn recv_decompress_loop(
                         height: (r.height as f64 * scale_y).round() as u32,
                     })
                     .collect();
+
+                // Update FPS EMA from the inter-frame interval. Done before
+                // the overlay is drawn so the displayed number reflects the
+                // current frame's arrival, not the previous one.
+                let now = Instant::now();
+                if let Some(prev) = last_frame_at {
+                    let dt = now.duration_since(prev).as_secs_f32();
+                    if dt > 0.0 {
+                        let instant_fps = 1.0 / dt;
+                        fps_ema = if fps_ema == 0.0 {
+                            instant_fps
+                        } else {
+                            fps_ema * (1.0 - FPS_ALPHA) + instant_fps * FPS_ALPHA
+                        };
+                    }
+                }
+                last_frame_at = Some(now);
+
+                // Paint the FPS readout directly on the RGBA frame buffer
+                // and add its rectangle to the damage list so the
+                // compositor actually re-uploads that region.
+                let mut display_data = display_data;
+                if debug {
+                    fps_overlay::draw_fps(
+                        &mut display_data,
+                        display_w,
+                        display_h,
+                        display_stride,
+                        fps_ema,
+                    );
+                    let (ox, oy, ow, oh) = fps_overlay::overlay_rect(10, 10);
+                    display_damage.push(remoteway_display::DamageRegion {
+                        x: ox,
+                        y: oy,
+                        width: ow.min(display_w.saturating_sub(ox)),
+                        height: oh.min(display_h.saturating_sub(oy)),
+                    });
+                }
 
                 let display_frame = DisplayFrame {
                     surface_id: { msg.header.stream_id },
@@ -312,6 +362,15 @@ pub async fn recv_decompress_loop(
                         width: iw,
                         height: ih,
                     }];
+
+                    // Re-paint the FPS overlay so it doesn't flicker between
+                    // the real frame and the synthesized one (which would
+                    // otherwise carry whatever the GPU upscale produced under
+                    // the badge area).
+                    let mut idata = idata;
+                    if debug {
+                        fps_overlay::draw_fps(&mut idata, iw, ih, istride, fps_ema);
+                    }
 
                     if !display.send_frame(DisplayFrame {
                         surface_id: msg.header.stream_id,

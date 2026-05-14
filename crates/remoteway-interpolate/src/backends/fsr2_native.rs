@@ -1,9 +1,11 @@
 //! AMD FSR 2 native upscaling backend via the Embark Studios `fsr` crate.
 //!
-//! Uses the real [`fsr::Context`] to perform spatial upscaling with temporal
-//! anti-aliasing. Motion vectors are computed via a simple CPU block-matching
-//! pass (or zero vectors as a fallback). Temporal interpolation (frame
-//! generation) is not supported by this backend — use [`super::fsr3`] for that.
+//! Uses the real [`fsr::Context`] to perform spatial upscaling. Motion vectors
+//! are passed as zero and the temporal history is reset every frame, because
+//! a screen-capture stream has no engine-generated jitter / MVs to drive
+//! FSR2's TAA-style accumulator — feeding it stale history produces ghosting.
+//! Temporal interpolation (frame generation) is not supported by this
+//! backend — use [`super::fsr3`] for that.
 
 #![allow(clippy::undocumented_unsafe_blocks)]
 
@@ -16,31 +18,23 @@ use crate::interpolator::{FrameInterpolator, GpuFrame};
 
 use super::vulkan_context::VulkanContext;
 
-/// Halton sequence generator for jitter offsets.
-///
-/// Produces values in `[0.0, 1.0)` for the given `index` and `base`.
-#[allow(dead_code)]
-fn halton(index: u32, base: u32) -> f32 {
-    let mut result = 0.0f32;
-    let mut f = 1.0f32 / base as f32;
-    let mut i = index;
-    while i > 0 {
-        result += f * (i % base) as f32;
-        i /= base;
-        f /= base as f32;
-    }
-    result
-}
-
 /// Cached per-resolution Vulkan resources for FSR 2 upscaling.
 ///
-/// Images and buffers are kept alive across frames so FSR 2 can maintain
-/// its internal temporal history. Recreated only when dimensions change.
+/// Images, buffers and the FSR context itself are kept alive across frames
+/// and recreated only when input/output dimensions change. The FSR context
+/// is bound to a specific `(max_render_size, display_size)` at creation —
+/// using a context whose `display_size` does not match the actual output
+/// texture leads to wrong sampling ratios (the symptom: only the top-left
+/// fraction of the source ends up scaled into the output).
 struct CachedResources {
     src_w: u32,
     src_h: u32,
     dst_w: u32,
     dst_h: u32,
+    /// FSR 2 context, created with `display_size = [dst_w, dst_h]` and
+    /// `max_render_size = [src_w, src_h]`. Owned here so we can destroy
+    /// it cleanly when dimensions change.
+    fsr_ctx: fsr::Context,
     color_image: vk::Image,
     color_mem: vk::DeviceMemory,
     color_view: vk::ImageView,
@@ -67,29 +61,13 @@ struct CachedResources {
 
 /// Real AMD FSR 2 upscaling via the `fsr` crate (Vulkan backend).
 ///
-/// Holds an [`fsr::Context`] for FSR 2 dispatches and a shared
-/// [`VulkanContext`] for buffer/image management. GPU resources are
-/// cached across frames so FSR 2 can maintain temporal history.
-/// Motion vectors are zeroed (FSR 2 uses its internal optical flow
-/// for 2D content without camera motion).
+/// The FSR context is created lazily (and recreated on every dimension
+/// change) inside [`CachedResources`], because FSR2's `display_size` is
+/// fixed at context creation time and must match the actual destination
+/// texture for sampling to be correct.
 pub struct Fsr2NativeInterpolator {
-    /// The FSR 2 context (interior-mutable via Mutex because
-    /// `dispatch()` requires `&mut self`).
-    fsr_ctx: Mutex<fsr::Context>,
     /// Shared Vulkan device, memory, and queue.
     ctx: Arc<Mutex<VulkanContext>>,
-    /// Monotonically increasing frame counter for Halton jitter.
-    frame_idx: Mutex<u64>,
-    /// Display / output dimensions.
-    #[allow(dead_code)]
-    display_w: u32,
-    #[allow(dead_code)]
-    display_h: u32,
-    /// Maximum input (render) dimensions.
-    #[allow(dead_code)]
-    max_render_w: u32,
-    #[allow(dead_code)]
-    max_render_h: u32,
     cached_res: Mutex<Option<CachedResources>>,
 }
 
@@ -106,61 +84,84 @@ impl Fsr2NativeInterpolator {
     /// Prefer [`Self::with_context`] when a shared context is available
     /// to avoid creating duplicate Vulkan instances/devices.
     pub fn new(
-        display_w: u32,
-        display_h: u32,
-        max_render_w: u32,
-        max_render_h: u32,
+        _display_w: u32,
+        _display_h: u32,
+        _max_render_w: u32,
+        _max_render_h: u32,
     ) -> Result<Self, InterpolateError> {
         let vk_ctx = Arc::new(Mutex::new(VulkanContext::new(&[])?));
-        Self::with_context(vk_ctx, display_w, display_h, max_render_w, max_render_h)
+        Self::with_context(vk_ctx, _display_w, _display_h, _max_render_w, _max_render_h)
     }
 
     /// Create a new FSR 2 native upscaler sharing an existing [`VulkanContext`].
+    ///
+    /// The `display_*` / `max_render_*` arguments are accepted only for API
+    /// compatibility; the actual FSR context is created lazily on the first
+    /// `upscale()` call with `display_size` matching the real destination
+    /// resolution (and recreated whenever it changes). Eagerly fixing the
+    /// context to some "max" resolution would force every dispatch into the
+    /// wrong scaling ratio and clip the output to the upper-left fraction
+    /// of the source.
     pub(crate) fn with_context(
         vk_ctx: Arc<Mutex<VulkanContext>>,
-        display_w: u32,
-        display_h: u32,
-        max_render_w: u32,
-        max_render_h: u32,
+        _display_w: u32,
+        _display_h: u32,
+        _max_render_w: u32,
+        _max_render_h: u32,
     ) -> Result<Self, InterpolateError> {
         let guard = vk_ctx
             .lock()
             .map_err(|e| InterpolateError::InitFailed(format!("mutex poisoned: {e}")))?;
 
-        let interface = unsafe {
+        // Probe the FSR Vulkan interface to fail fast if the SDK / driver
+        // combo cannot host FSR at all. The interface itself is discarded —
+        // it cannot be reused across contexts, and the per-resolution
+        // context built later in `upscale` will recreate it.
+        let _probe = unsafe {
             fsr::vk::get_interface(&guard._entry, &guard.instance, guard.physical_device)
         }
         .map_err(|e| InterpolateError::InitFailed(format!("FSR interface: {e}")))?;
+        drop(_probe);
+        drop(guard);
 
-        let fsr_device = unsafe { fsr::vk::get_device(guard.device.clone()) };
+        Ok(Self {
+            ctx: vk_ctx,
+            cached_res: Mutex::new(None),
+        })
+    }
+
+    /// Build a fresh FSR 2 context for the given input/output resolution.
+    ///
+    /// `display_size` must equal the output texture's `dst_w × dst_h` —
+    /// FSR2 uses it directly as the dispatch grid and the sampling scale.
+    fn build_fsr_context(
+        vk_ctx: &VulkanContext,
+        src_w: u32,
+        src_h: u32,
+        dst_w: u32,
+        dst_h: u32,
+    ) -> Result<fsr::Context, InterpolateError> {
+        let interface = unsafe {
+            fsr::vk::get_interface(&vk_ctx._entry, &vk_ctx.instance, vk_ctx.physical_device)
+        }
+        .map_err(|e| InterpolateError::InterpolateFailed(format!("FSR interface: {e}")))?;
+
+        let fsr_device = unsafe { fsr::vk::get_device(vk_ctx.device.clone()) };
 
         let flags = fsr::InitializationFlagBits::ENABLE_DEPTH_INFINITE
             | fsr::InitializationFlagBits::ENABLE_DEPTH_INVERTED;
 
-        let context_desc = fsr::ContextDescription {
+        let desc = fsr::ContextDescription {
             interface,
             flags,
-            max_render_size: [max_render_w, max_render_h],
-            display_size: [display_w, display_h],
+            max_render_size: [src_w, src_h],
+            display_size: [dst_w, dst_h],
             device: &fsr_device,
             message_callback: None,
         };
 
-        let fsr_ctx = unsafe { fsr::Context::new(context_desc) }
-            .map_err(|e| InterpolateError::InitFailed(format!("FSR context: {e}")))?;
-
-        drop(guard);
-
-        Ok(Self {
-            fsr_ctx: Mutex::new(fsr_ctx),
-            ctx: vk_ctx,
-            frame_idx: Mutex::new(0),
-            display_w,
-            display_h,
-            max_render_w,
-            max_render_h,
-            cached_res: Mutex::new(None),
-        })
+        unsafe { fsr::Context::new(desc) }
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("FSR context: {e}")))
     }
 
     /// Create a Vulkan image + image view for FSR 2 use.
@@ -415,15 +416,6 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
         let src_w = src.width;
         let src_h = src.height;
 
-        // Acquire frame index.
-        let mut fidx = self
-            .frame_idx
-            .lock()
-            .map_err(|e| InterpolateError::InterpolateFailed(format!("frame_idx lock: {e}")))?;
-        let frame_idx = *fidx;
-        *fidx = frame_idx.wrapping_add(1);
-        drop(fidx);
-
         // Lock Vulkan context for the entire operation.
         let vk_ctx = self
             .ctx
@@ -442,9 +434,11 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
         };
 
         if needs_recreate {
-            // Destroy old cached resources.
-            if let Some(old) = cache.take() {
+            // Destroy old cached resources, including the FSR context whose
+            // display_size is bound to the previous output resolution.
+            if let Some(mut old) = cache.take() {
                 unsafe {
+                    let _ = old.fsr_ctx.destroy();
                     vk_ctx.device.destroy_image_view(old.color_view, None);
                     vk_ctx.device.destroy_image(old.color_image, None);
                     vk_ctx.device.free_memory(old.color_mem, None);
@@ -470,6 +464,11 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
                         .free_command_buffers(vk_ctx.command_pool, &[old.cmd]);
                 }
             }
+
+            // Build a fresh FSR context whose `display_size` matches the
+            // actual output texture; this is what fixes the "only the
+            // top-left fraction of the source is visible" symptom.
+            let fsr_ctx = Self::build_fsr_context(&vk_ctx, src_w, src_h, dst_w, dst_h)?;
 
             // Create new resources.
             let fsr_usage = vk::ImageUsageFlags::SAMPLED
@@ -535,11 +534,82 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
 
             let cmd = vk_ctx.allocate_command_buffer()?;
 
+            // One-time GPU initialization of depth and motion-vector images:
+            // depth = 1.0 (far plane under inverted-infinite depth), MVs = 0.
+            // Both are constants for screen-capture upscale, so we upload
+            // their pixel data + execute the buf→image copies + transition
+            // to SHADER_READ_ONLY_OPTIMAL exactly once here. The per-frame
+            // dispatch then skips all of this work and reads the cached
+            // images directly. Saves ~7 MB CPU→GPU copy and ~6 image
+            // barriers per frame.
+            let depth_bytes = f32::to_bits(1.0f32).to_le_bytes();
+            let pixels = (src_w * src_h) as usize;
+            let mut depth_scratch = Vec::with_capacity(pixels * 4);
+            for _ in 0..pixels {
+                depth_scratch.extend_from_slice(&depth_bytes);
+            }
+            let mv_scratch = vec![0u8; mv_size as usize];
+            vk_ctx.upload_to_buffer(sdm, &depth_scratch)?;
+            vk_ctx.upload_to_buffer(smm, &mv_scratch)?;
+            drop(depth_scratch);
+            drop(mv_scratch);
+
+            let init_cmd = vk_ctx.allocate_command_buffer()?;
+            unsafe {
+                vk_ctx
+                    .device
+                    .begin_command_buffer(init_cmd, &vk::CommandBufferBeginInfo::default())
+                    .map_err(|e| {
+                        InterpolateError::InterpolateFailed(format!("begin init cmd: {e}"))
+                    })?;
+                cmd_image_barrier_simple(
+                    &vk_ctx.device,
+                    init_cmd,
+                    depth_image,
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                );
+                copy_buf_to_image(&vk_ctx.device, init_cmd, sdb, depth_image, src_w, src_h);
+                cmd_image_barrier_simple(
+                    &vk_ctx.device,
+                    init_cmd,
+                    depth_image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                );
+                cmd_image_barrier_simple(
+                    &vk_ctx.device,
+                    init_cmd,
+                    mv_image,
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                );
+                copy_buf_to_image(&vk_ctx.device, init_cmd, smb, mv_image, src_w, src_h);
+                cmd_image_barrier_simple(
+                    &vk_ctx.device,
+                    init_cmd,
+                    mv_image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                );
+                vk_ctx
+                    .device
+                    .end_command_buffer(init_cmd)
+                    .map_err(|e| InterpolateError::InterpolateFailed(format!("end init cmd: {e}")))?;
+            }
+            vk_ctx.submit_and_wait(init_cmd)?;
+            unsafe {
+                vk_ctx
+                    .device
+                    .free_command_buffers(vk_ctx.command_pool, &[init_cmd]);
+            }
+
             *cache = Some(CachedResources {
                 src_w,
                 src_h,
                 dst_w,
                 dst_h,
+                fsr_ctx,
                 color_image,
                 color_mem,
                 color_view,
@@ -565,28 +635,20 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
             });
         }
 
-        let res = cache.as_ref().unwrap();
-        let _src_size = (src_w * src_h * 4) as u64;
-        let mv_size = (src_w * src_h * 4) as u64;
+        // Mutable borrow — needed because `fsr::Context::dispatch` and
+        // `fsr::vk::get_texture_resource` both take `&mut fsr::Context`.
+        let res = cache.as_mut().unwrap();
         let dst_size = res.readback_size;
 
-        // Upload source frame.
+        // Upload only the color frame — depth and motion-vector images
+        // were filled once when the cache was built and stay in
+        // SHADER_READ_ONLY_OPTIMAL across frames.
+        let upload_t0 = std::time::Instant::now();
         vk_ctx.upload_to_buffer(res.staging_color_mem, &src.data)?;
+        let upload_ms = upload_t0.elapsed().as_secs_f32() * 1000.0;
 
-        // Upload depth (1.0 = infinite depth).
-        let depth_val: u32 = f32::to_bits(1.0f32);
-        let depth_data: Vec<u8> = std::iter::repeat(&depth_val.to_le_bytes())
-            .take((src_w * src_h) as usize)
-            .flatten()
-            .copied()
-            .collect();
-        vk_ctx.upload_to_buffer(res.staging_depth_mem, &depth_data)?;
-
-        // Upload zero motion vectors.
-        let mv_zero = vec![0u8; mv_size as usize];
-        vk_ctx.upload_to_buffer(res.staging_mv_mem, &mv_zero)?;
-
-        // Record command buffer.
+        // Record command buffer. Only the color image and output image are
+        // touched here; the depth/MV images stay in SHADER_READ from init.
         let cmd = res.cmd;
         let begin_info = vk::CommandBufferBeginInfo::default();
         unsafe {
@@ -599,7 +661,10 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
                 .begin_command_buffer(cmd, &begin_info)
                 .map_err(|e| InterpolateError::InterpolateFailed(format!("begin cmd: {e}")))?;
 
-            // Upload images via staging.
+            // Color image: contents are fully overwritten each frame, so
+            // UNDEFINED as the source layout is fine (discards previous
+            // contents). After the copy we transition to SHADER_READ so
+            // FSR2 can sample it.
             cmd_image_barrier_simple(
                 &vk_ctx.device,
                 cmd,
@@ -623,52 +688,8 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             );
 
-            cmd_image_barrier_simple(
-                &vk_ctx.device,
-                cmd,
-                res.depth_image,
-                vk::ImageLayout::UNDEFINED,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            );
-            copy_buf_to_image(
-                &vk_ctx.device,
-                cmd,
-                res.staging_depth_buf,
-                res.depth_image,
-                src_w,
-                src_h,
-            );
-            cmd_image_barrier_simple(
-                &vk_ctx.device,
-                cmd,
-                res.depth_image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            );
-
-            cmd_image_barrier_simple(
-                &vk_ctx.device,
-                cmd,
-                res.mv_image,
-                vk::ImageLayout::UNDEFINED,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            );
-            copy_buf_to_image(
-                &vk_ctx.device,
-                cmd,
-                res.staging_mv_buf,
-                res.mv_image,
-                src_w,
-                src_h,
-            );
-            cmd_image_barrier_simple(
-                &vk_ctx.device,
-                cmd,
-                res.mv_image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            );
-
+            // Output image: same UNDEFINED→GENERAL trick. FSR2 will write
+            // every pixel during dispatch.
             cmd_image_barrier_simple(
                 &vk_ctx.device,
                 cmd,
@@ -694,14 +715,11 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
         }
 
         // --- FSR 2 dispatch (records into the SAME command buffer) ---
-        let mut fsr_guard = self
-            .fsr_ctx
-            .lock()
-            .map_err(|e| InterpolateError::InterpolateFailed(format!("fsr ctx lock: {e}")))?;
-
+        // The FSR context lives in the cache (one per `(src, dst)`) — no
+        // separate mutex to acquire.
         let color_res = unsafe {
             fsr::vk::get_texture_resource(
-                &mut fsr_guard,
+                &mut res.fsr_ctx,
                 res.color_image,
                 res.color_view,
                 vk::Format::R8G8B8A8_UNORM,
@@ -712,7 +730,7 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
         };
         let depth_res = unsafe {
             fsr::vk::get_texture_resource(
-                &mut fsr_guard,
+                &mut res.fsr_ctx,
                 res.depth_image,
                 res.depth_view,
                 vk::Format::R32_SFLOAT,
@@ -723,7 +741,7 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
         };
         let mv_res = unsafe {
             fsr::vk::get_texture_resource(
-                &mut fsr_guard,
+                &mut res.fsr_ctx,
                 res.mv_image,
                 res.mv_view,
                 vk::Format::R16G16_SFLOAT,
@@ -734,7 +752,7 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
         };
         let output_res = unsafe {
             fsr::vk::get_texture_resource(
-                &mut fsr_guard,
+                &mut res.fsr_ctx,
                 res.output_image,
                 res.output_view,
                 vk::Format::R8G8B8A8_UNORM,
@@ -744,10 +762,19 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
             )
         };
 
-        let jx = halton((frame_idx & 255) as u32, 2) - 0.5;
-        let jy = halton((frame_idx & 255) as u32, 3) - 0.5;
-
-        // FSR dispatch records into cmd (still in recording state after upload).
+        // Screen-capture frames carry no sub-pixel jitter and no engine
+        // motion vectors — feeding FSR2 stale jitter offsets + zero MVs
+        // builds up a temporal history that ghosts everything that moves
+        // between frames. We pin jitter to (0,0) (so FSR doesn't expect
+        // off-grid sampling) and pass `reset=true` every dispatch so the
+        // history buffer is discarded each frame.
+        //
+        // With history disabled, FSR2's spatial reconstruction kernel
+        // alone tends to soften high-frequency edges (text strokes, UI
+        // lines). We compensate by enabling FSR2's internal RCAS pass at
+        // a strong setting — `sharpness` >= 0.8 keeps glyphs crisp on the
+        // upscaled image while still being clamped by FSR2's own
+        // ringing limiter, so we get sharp text without halos.
         let cmd_list: fsr::CommandList = cmd.into();
         let desc = fsr::DispatchDescription::new(
             cmd_list,
@@ -758,12 +785,12 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
             1.0 / 60.0,
             [src_w, src_h],
         )
-        .jitter_offset([jx, jy])
-        .sharpness(0.5);
+        .jitter_offset([0.0, 0.0])
+        .reset(true)
+        .sharpness(0.85);
 
-        unsafe { fsr_guard.dispatch(desc) }
+        unsafe { res.fsr_ctx.dispatch(desc) }
             .map_err(|e| InterpolateError::InterpolateFailed(format!("FSR dispatch: {e}")))?;
-        drop(fsr_guard);
 
         // After FSR dispatch, transition output image and copy to readback buffer
         // — all within the same command buffer.
@@ -822,10 +849,27 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
                 .map_err(|e| InterpolateError::InterpolateFailed(format!("end dr cmd: {e}")))?;
         }
 
-        // Single submit for both dispatch and readback.
+        // Single submit for both dispatch and readback. This blocks the
+        // calling thread until the GPU finishes, which is the dominant
+        // cost of the FSR2 upscale path — log wall-time so the user can
+        // see whether it's actually the bottleneck.
+        let submit_t0 = std::time::Instant::now();
         vk_ctx.submit_and_wait(cmd)?;
+        let submit_ms = submit_t0.elapsed().as_secs_f32() * 1000.0;
 
+        let readback_t0 = std::time::Instant::now();
         let result_data = vk_ctx.read_from_buffer(res.readback_mem, dst_size as usize)?;
+        let readback_ms = readback_t0.elapsed().as_secs_f32() * 1000.0;
+
+        tracing::debug!(
+            src = format!("{src_w}x{src_h}"),
+            dst = format!("{dst_w}x{dst_h}"),
+            upload_ms,
+            gpu_ms = submit_ms,
+            readback_ms,
+            total_ms = upload_ms + submit_ms + readback_ms,
+            "fsr2 upscale done"
+        );
 
         Ok(GpuFrame {
             data: result_data,
@@ -847,45 +891,35 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
 
 impl Drop for Fsr2NativeInterpolator {
     fn drop(&mut self) {
-        // Destroy FSR context.
-        if let Ok(mut ctx) = self.fsr_ctx.lock() {
-            unsafe {
-                let _ = ctx.destroy();
-            }
-        }
-        // Destroy cached GPU resources.
         if let Ok(mut cache) = self.cached_res.lock()
-            && let Some(res) = cache.take()
+            && let Some(mut res) = cache.take()
+            && let Ok(vk_ctx) = self.ctx.lock()
         {
-            if let Ok(vk_ctx) = self.ctx.lock() {
-                unsafe {
-                    vk_ctx.device.destroy_image_view(res.color_view, None);
-                    vk_ctx.device.destroy_image(res.color_image, None);
-                    vk_ctx.device.free_memory(res.color_mem, None);
-                    vk_ctx.device.destroy_image_view(res.depth_view, None);
-                    vk_ctx.device.destroy_image(res.depth_image, None);
-                    vk_ctx.device.free_memory(res.depth_mem, None);
-                    vk_ctx.device.destroy_image_view(res.mv_view, None);
-                    vk_ctx.device.destroy_image(res.mv_image, None);
-                    vk_ctx.device.free_memory(res.mv_mem, None);
-                    vk_ctx.device.destroy_image_view(res.output_view, None);
-                    vk_ctx.device.destroy_image(res.output_image, None);
-                    vk_ctx.device.free_memory(res.output_mem, None);
-                    vk_ctx.device.destroy_buffer(res.staging_color_buf, None);
-                    vk_ctx.device.free_memory(res.staging_color_mem, None);
-                    vk_ctx.device.destroy_buffer(res.staging_depth_buf, None);
-                    vk_ctx.device.free_memory(res.staging_depth_mem, None);
-                    vk_ctx.device.destroy_buffer(res.staging_mv_buf, None);
-                    vk_ctx.device.free_memory(res.staging_mv_mem, None);
-                    vk_ctx.device.destroy_buffer(res.readback_buf, None);
-                    vk_ctx.device.free_memory(res.readback_mem, None);
-                    vk_ctx
-                        .device
-                        .free_command_buffers(vk_ctx.command_pool, &[res.cmd]);
-                    vk_ctx
-                        .device
-                        .free_command_buffers(vk_ctx.command_pool, &[res.cmd]);
-                }
+            unsafe {
+                let _ = res.fsr_ctx.destroy();
+                vk_ctx.device.destroy_image_view(res.color_view, None);
+                vk_ctx.device.destroy_image(res.color_image, None);
+                vk_ctx.device.free_memory(res.color_mem, None);
+                vk_ctx.device.destroy_image_view(res.depth_view, None);
+                vk_ctx.device.destroy_image(res.depth_image, None);
+                vk_ctx.device.free_memory(res.depth_mem, None);
+                vk_ctx.device.destroy_image_view(res.mv_view, None);
+                vk_ctx.device.destroy_image(res.mv_image, None);
+                vk_ctx.device.free_memory(res.mv_mem, None);
+                vk_ctx.device.destroy_image_view(res.output_view, None);
+                vk_ctx.device.destroy_image(res.output_image, None);
+                vk_ctx.device.free_memory(res.output_mem, None);
+                vk_ctx.device.destroy_buffer(res.staging_color_buf, None);
+                vk_ctx.device.free_memory(res.staging_color_mem, None);
+                vk_ctx.device.destroy_buffer(res.staging_depth_buf, None);
+                vk_ctx.device.free_memory(res.staging_depth_mem, None);
+                vk_ctx.device.destroy_buffer(res.staging_mv_buf, None);
+                vk_ctx.device.free_memory(res.staging_mv_mem, None);
+                vk_ctx.device.destroy_buffer(res.readback_buf, None);
+                vk_ctx.device.free_memory(res.readback_mem, None);
+                vk_ctx
+                    .device
+                    .free_command_buffers(vk_ctx.command_pool, &[res.cmd]);
             }
         }
     }
@@ -894,28 +928,6 @@ impl Drop for Fsr2NativeInterpolator {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn halton_values() {
-        // Halton(0, 2) = 0.0
-        assert!((halton(0, 2) - 0.0).abs() < 1e-6);
-        // Halton(1, 2) = 0.5
-        assert!((halton(1, 2) - 0.5).abs() < 1e-6);
-        // Halton(2, 2) = 0.25
-        assert!((halton(2, 2) - 0.25).abs() < 1e-6);
-        // Halton(3, 2) = 0.75
-        assert!((halton(3, 2) - 0.75).abs() < 1e-6);
-    }
-
-    #[test]
-    fn halton_jitter_range() {
-        for i in 0..256 {
-            let jx = halton(i, 2) - 0.5;
-            let jy = halton(i, 3) - 0.5;
-            assert!((-0.5..=0.5).contains(&jx), "jx={jx} out of range");
-            assert!((-0.5..=0.5).contains(&jy), "jy={jy} out of range");
-        }
-    }
 
     #[test]
     fn fsr2_native_is_send_sync() {

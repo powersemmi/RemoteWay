@@ -18,7 +18,7 @@ path = "src/main.rs"
 [dependencies]
 remoteway-core = { path = "../remoteway-core" }
 remoteway-proto = { path = "../remoteway-proto" }
-remoteway-compress = { path = "../remoteway-compress" }
+remoteway-compress = { path = "../remoteway-compress", features = ["zstd-backend"] }
 remoteway-transport = { path = "../remoteway-transport" }
 remoteway-display = { path = "../remoteway-display" }
 remoteway-interpolate = { path = "../remoteway-interpolate" }

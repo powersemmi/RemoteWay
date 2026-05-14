@@ -19,6 +19,11 @@ pub enum CompressorError {
 /// Selects the active compression algorithm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CompressorKind {
+    /// No compression — bytes go on the wire as-is. Useful for very
+    /// high-bandwidth links (loopback, fast LAN) where CPU spent on
+    /// LZ4/zstd would be the actual bottleneck, and for diagnosing
+    /// whether compression is the cost driver in the pipeline.
+    None,
     /// Fast LZ4 compression (default).
     #[default]
     Lz4,
@@ -35,9 +40,11 @@ impl CompressorKind {
     /// Returns an error if the underlying compressor fails.
     /// The LZ4 backend is infallible in practice (in-memory only);
     /// the zstd backend may propagate an I/O error from the C library.
+    /// `None` always succeeds.
     #[must_use = "compression result must be checked for errors before using the compressed data"]
     pub fn compress(&self, data: &[u8]) -> Result<Vec<u8>, CompressorError> {
         match self {
+            CompressorKind::None => Ok(data.to_vec()),
             CompressorKind::Lz4 => Ok(lz4_compress(data)),
             #[cfg(feature = "zstd-backend")]
             CompressorKind::Zstd => compress_zstd(data),
@@ -47,6 +54,7 @@ impl CompressorKind {
     /// Decompress `data` using the selected algorithm.
     pub fn decompress(&self, data: &[u8]) -> Result<Vec<u8>, CompressorError> {
         match self {
+            CompressorKind::None => Ok(data.to_vec()),
             CompressorKind::Lz4 => Ok(lz4_decompress(data)?),
             #[cfg(feature = "zstd-backend")]
             CompressorKind::Zstd => Ok(decompress_zstd(data)?),

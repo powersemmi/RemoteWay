@@ -14,10 +14,45 @@ pub enum CaptureBackendArg {
     Portal,
 }
 
-#[derive(Clone, Debug, clap::ValueEnum)]
+#[derive(Clone, Debug, clap::ValueEnum, PartialEq, Eq)]
 pub enum CompressArg {
+    /// No compression — frames go on the wire as raw bytes. Use on
+    /// loopback / fast LAN where LZ4/zstd CPU cost dominates over
+    /// bandwidth savings, or to profile whether compression is the
+    /// pipeline bottleneck.
+    None,
+    /// Fast LZ4 block compression (default).
     Lz4,
+    /// Higher-ratio zstd compression.
     Zstd,
+}
+
+impl CompressArg {
+    /// Project to the runtime [`CompressorKind`] used by the compress
+    /// pipeline. Server and client must agree on the same kind via
+    /// matching `--compress` flags — there's no in-band negotiation
+    /// of the per-region payload format.
+    pub fn to_kind(&self) -> remoteway_compress::compressor::CompressorKind {
+        match self {
+            CompressArg::None => remoteway_compress::compressor::CompressorKind::None,
+            CompressArg::Lz4 => remoteway_compress::compressor::CompressorKind::Lz4,
+            CompressArg::Zstd => remoteway_compress::compressor::CompressorKind::Zstd,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum, PartialEq, Eq)]
+pub enum DownscaleFilterArg {
+    /// Area-weighted average over the source rectangle each destination pixel
+    /// covers (proper box filter). Preserves anti-aliasing, hides text strokes
+    /// less, and feeds a clean image to the client-side upscaler. The right
+    /// default for almost all use cases.
+    Box,
+    /// Nearest-neighbor: pick a single source pixel per destination pixel.
+    /// Cheapest CPU cost but causes severe aliasing — only useful on very
+    /// constrained hosts where the box filter cannot keep up with the frame
+    /// rate.
+    Nearest,
 }
 
 #[derive(Parser)]
@@ -57,6 +92,13 @@ pub struct Cli {
     /// 1.0 = native resolution, 0.5 = half, 0.25 = quarter.
     #[arg(long, default_value = "1.0")]
     pub scale: f64,
+
+    /// Filter used by the server-side downscale (active when --scale < 1.0).
+    /// `box` averages the covered source area per destination pixel and is
+    /// the right default; `nearest` is faster but produces stair-stepped
+    /// edges that the client-side FSR upscale cannot recover.
+    #[arg(long, value_enum, default_value = "box")]
+    pub downscale_filter: DownscaleFilterArg,
 
     /// Open portal source-selection dialog, save restore token, then exit.
     /// Requires `--features portal`. Run once from the desktop (not over SSH)

@@ -21,6 +21,7 @@ rife = []
 
 [dependencies]
 thiserror.workspace = true
+tracing.workspace = true
 libloading = { version = "0.8", optional = true }
 
 # Optional GPU dependencies (feature-gated)

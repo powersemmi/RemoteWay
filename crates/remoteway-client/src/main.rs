@@ -21,6 +21,7 @@ use tracing::{debug, info};
 static GLOBAL: MiMalloc = MiMalloc;
 
 mod cli;
+mod fps_overlay;
 mod pipeline;
 
 #[cfg(feature = "tracy")]
@@ -170,6 +171,8 @@ async fn run(cli: cli::Cli) -> Result<()> {
 
     // Receive + decompress + display loop (runs in tokio task).
     let recv_shutdown = shutdown.clone();
+    let debug = cli.debug;
+    let compressor_kind = cli.compress.to_kind();
     let recv_task = tokio::spawn(async move {
         pipeline::recv_decompress_loop(
             &mut transport,
@@ -177,6 +180,8 @@ async fn run(cli: cli::Cli) -> Result<()> {
             interpolation,
             recv_shutdown,
             upscale_factor,
+            debug,
+            compressor_kind,
         )
         .await;
     });
@@ -284,6 +289,7 @@ mod tests {
             upscale: 1.0,
             interpolation_backend: None,
             capture_fps: 100,
+            debug: false,
         };
         let args = cli.ssh_command();
         assert!(args.iter().any(|a| a.as_str().contains("test.example.com")));

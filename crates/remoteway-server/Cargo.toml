@@ -19,12 +19,13 @@ path = "src/main.rs"
 remoteway-core = { path = "../remoteway-core" }
 remoteway-proto = { path = "../remoteway-proto" }
 remoteway-capture = { path = "../remoteway-capture" }
-remoteway-compress = { path = "../remoteway-compress" }
+remoteway-compress = { path = "../remoteway-compress", features = ["zstd-backend"] }
 remoteway-transport = { path = "../remoteway-transport" }
 remoteway-input = { path = "../remoteway-input" }
 mimalloc.workspace = true
 libc.workspace = true
 anyhow.workspace = true
+rayon.workspace = true
 clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true

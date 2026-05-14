@@ -192,6 +192,13 @@ pub struct Fsr3FrameGen {
     staging_buffer: vk::Buffer,
     staging_mem: vk::DeviceMemory,
     staging_size: u64,
+    /// Pre-built CPU scratch for the constant depth-far fill (1.0f per pixel,
+    /// `render_w * render_h * 4` bytes). Re-uploaded each frame instead of
+    /// being recomputed.
+    depth_scratch: Vec<u8>,
+    /// Pre-built CPU scratch for the constant zero motion-vector fill
+    /// (`render_w * render_h * 4` bytes).
+    mv_scratch: Vec<u8>,
     /// Frame ID counter.
     frame_id: Mutex<u64>,
     /// Render resolution.
@@ -394,6 +401,18 @@ impl Fsr3FrameGen {
             )
             .map_err(|e| InterpolateError::InitFailed(format!("staging buffer: {e}")))?;
         drop(guard);
+
+        // Build constant CPU scratch buffers once. `depth` is a fill of
+        // `1.0f32` (far plane under inverted depth) and `mv` is zeros — they
+        // never change between frames, only the GPU image gets re-uploaded.
+        let pixels = render_w as usize * render_h as usize;
+        let depth_bytes = f32::to_bits(1.0f32).to_le_bytes();
+        let mut depth_scratch = Vec::with_capacity(pixels * 4);
+        for _ in 0..pixels {
+            depth_scratch.extend_from_slice(&depth_bytes);
+        }
+        let mv_scratch = vec![0u8; pixels * 4];
+
         Ok(Self {
             vk,
             fg_ctx,
@@ -410,6 +429,8 @@ impl Fsr3FrameGen {
             staging_buffer,
             staging_mem,
             staging_size,
+            depth_scratch,
+            mv_scratch,
             frame_id: Mutex::new(0),
             render_w,
             render_h,
@@ -444,9 +465,9 @@ impl Fsr3FrameGen {
             &self.input_color,
         )?;
         // Fill depth with far value (1.0 for inverted depth with infinite far plane).
-        fill_depth_far(device, &guard, &self.input_depth)?;
+        fill_depth_far(device, &guard, &self.input_depth, &self.depth_scratch)?;
         // Fill motion vectors with zero (no engine-provided MV for captured content).
-        fill_mv_zero(device, &guard, &self.input_mv)?;
+        fill_mv_zero(device, &guard, &self.input_mv, &self.mv_scratch)?;
         // Allocate command buffer and begin recording.
         let cmd = guard
             .allocate_command_buffer()
@@ -619,6 +640,10 @@ impl Fsr3FrameGen {
         };
         let err = unsafe { ffxFrameInterpolationPrepare(&mut self.fg_ctx, &prepare_desc) };
         if err != FFX_OK {
+            unsafe {
+                let _ = device.end_command_buffer(cmd);
+                device.free_command_buffers(guard.command_pool, &[cmd]);
+            }
             drop(guard);
             return Err(InterpolateError::InterpolateFailed(format!(
                 "ffxFrameInterpolationPrepare failed: {err}"
@@ -696,6 +721,10 @@ impl Fsr3FrameGen {
         };
         let err = unsafe { ffxFrameInterpolationDispatch(&mut self.fg_ctx, &dispatch_desc) };
         if err != FFX_OK {
+            unsafe {
+                let _ = device.end_command_buffer(cmd);
+                device.free_command_buffers(guard.command_pool, &[cmd]);
+            }
             drop(guard);
             return Err(InterpolateError::InterpolateFailed(format!(
                 "ffxFrameInterpolationDispatch failed: {err}"
@@ -961,16 +990,16 @@ fn fill_depth_far(
     device: &ash::Device,
     vk_ctx: &VulkanContext,
     dst_image: &GpuImage,
+    data: &[u8],
 ) -> Result<(), InterpolateError> {
     let size = dst_image.width as u64 * dst_image.height as u64 * 4;
-    let data = bytemuck::cast_slice(&[1.0f32; 1])
-        .repeat(dst_image.width as usize * dst_image.height as usize);
+    debug_assert_eq!(data.len(), size as usize, "depth scratch size mismatch");
     let (staging, staging_mem) = vk_ctx.create_buffer(
         size,
         vk::BufferUsageFlags::TRANSFER_SRC,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
     )?;
-    vk_ctx.upload_to_buffer(staging_mem, &data)?;
+    vk_ctx.upload_to_buffer(staging_mem, data)?;
     let cmd = vk_ctx.allocate_command_buffer()?;
     unsafe { device.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default()) }
         .map_err(|e| InterpolateError::InterpolateFailed(e.to_string()))?;
@@ -1025,15 +1054,16 @@ fn fill_mv_zero(
     device: &ash::Device,
     vk_ctx: &VulkanContext,
     dst_image: &GpuImage,
+    data: &[u8],
 ) -> Result<(), InterpolateError> {
     let size = dst_image.width as u64 * dst_image.height as u64 * 4; // RG16F = 4 bytes
-    let data = vec![0u8; size as usize];
+    debug_assert_eq!(data.len(), size as usize, "mv scratch size mismatch");
     let (staging, staging_mem) = vk_ctx.create_buffer(
         size,
         vk::BufferUsageFlags::TRANSFER_SRC,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
     )?;
-    vk_ctx.upload_to_buffer(staging_mem, &data)?;
+    vk_ctx.upload_to_buffer(staging_mem, data)?;
     let cmd = vk_ctx.allocate_command_buffer()?;
     unsafe { device.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default()) }
         .map_err(|e| InterpolateError::InterpolateFailed(e.to_string()))?;
@@ -1126,7 +1156,8 @@ fn read_rgba16f_to_rgba8(
 mod tests {
     use super::*;
     #[test]
-    fn fsr3_fg_name() {
-        assert!(!Fsr3FrameGen.name().is_empty());
+    fn fsr3_fg_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Fsr3FrameGen>();
     }
 }

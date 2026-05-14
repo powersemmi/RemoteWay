@@ -1,7 +1,7 @@
 //! Unified encode/decode pipeline orchestrating delta + compression stages.
 
+use crate::compressor::{CompressorError, CompressorKind};
 use crate::delta::{DamageRect, delta_decode, delta_encode_simd};
-use crate::lz4::{CompressError, compress_region, decompress_region};
 use crate::stats::{FrameStats, StageTimer};
 
 /// Output of the compression pipeline for one frame.
@@ -42,6 +42,7 @@ pub fn compress_frame_into(
     regions: &[DamageRect],
     delta_scratch: &mut Vec<u8>,
     out: &mut CompressedFrame,
+    kind: CompressorKind,
 ) {
     #[cfg(feature = "tracy")]
     let _zone = tracy_client::span!("compress_frame");
@@ -57,17 +58,35 @@ pub fn compress_frame_into(
     out.region_offsets.reserve(regions.len());
     out.region_sizes.reserve(regions.len());
 
-    // Compress each region independently (could be parallelised via rayon later).
+    // Compress each region in parallel: each region is an independent
+    // delta-encoded byte slice and LZ4/zstd has no cross-region state.
+    // The single full-frame case is split into stripes upstream so this
+    // loop actually sees N independent jobs that occupy N rayon workers.
+    use rayon::prelude::*;
+    let mut region_slices: Vec<&[u8]> = Vec::with_capacity(regions.len());
     let mut delta_offset = 0;
     for rect in regions {
-        let row_bytes = rect.width as usize * 4;
-        let region_len = row_bytes * rect.height as usize;
-        let region_delta = &delta_scratch[delta_offset..delta_offset + region_len];
-        let compressed = compress_region(region_delta);
-        out.region_offsets.push(out.data.len());
-        out.region_sizes.push(compressed.len());
-        out.data.extend_from_slice(&compressed);
+        let region_len = rect.width as usize * 4 * rect.height as usize;
+        region_slices.push(&delta_scratch[delta_offset..delta_offset + region_len]);
         delta_offset += region_len;
+    }
+    let compressed_regions: Vec<Vec<u8>> = region_slices
+        .par_iter()
+        .map(|delta| {
+            // `compress` is infallible for Lz4 and None; zstd is in-memory.
+            // Falling back to an empty blob on any zstd failure is safer
+            // than panicking — the client decompress will surface the
+            // error as a decode failure for that region only.
+            kind.compress(delta).unwrap_or_default()
+        })
+        .collect();
+
+    // Serially stitch the per-region blobs into `out.data` (offsets/sizes
+    // must reflect the actual byte layout in the wire payload).
+    for blob in &compressed_regions {
+        out.region_offsets.push(out.data.len());
+        out.region_sizes.push(blob.len());
+        out.data.extend_from_slice(blob);
     }
     let compress_time = compress_timer.elapsed();
 
@@ -91,7 +110,15 @@ pub fn compress_frame(
 ) -> CompressedFrame {
     let mut scratch = Vec::with_capacity(current.len() / 4);
     let mut out = CompressedFrame::default();
-    compress_frame_into(current, previous, stride, regions, &mut scratch, &mut out);
+    compress_frame_into(
+        current,
+        previous,
+        stride,
+        regions,
+        &mut scratch,
+        &mut out,
+        CompressorKind::default(),
+    );
     out
 }
 
@@ -106,16 +133,34 @@ pub fn decompress_frame_into(
     regions: &[DamageRect],
     delta_scratch: &mut Vec<u8>,
     output: &mut Vec<u8>,
-) -> Result<(), CompressError> {
+    kind: CompressorKind,
+) -> Result<(), CompressorError> {
     output.resize(previous.len(), 0);
-
     delta_scratch.clear();
-    for (i, _rect) in regions.iter().enumerate() {
-        let start = compressed.region_offsets[i];
-        let end = start + compressed.region_sizes[i];
-        let blob = &compressed.data[start..end];
-        let region_delta = decompress_region(blob)?;
-        delta_scratch.extend_from_slice(&region_delta);
+
+    // Decompress each region in parallel. LZ4/zstd decode is the dominant
+    // single-threaded cost on the client when the source has been split
+    // into multiple stripes (or carries multiple damage rects), so this
+    // is where parallelism actually buys us frame budget.
+    use rayon::prelude::*;
+    let blobs: Vec<&[u8]> = regions
+        .iter()
+        .enumerate()
+        .map(|(i, _)| {
+            let start = compressed.region_offsets[i];
+            let end = start + compressed.region_sizes[i];
+            &compressed.data[start..end]
+        })
+        .collect();
+    let decoded: Vec<Result<Vec<u8>, CompressorError>> = blobs
+        .par_iter()
+        .map(|blob| kind.decompress(blob))
+        .collect();
+
+    // Serially flatten the per-region deltas (delta_decode expects them
+    // concatenated in region order).
+    for region in decoded {
+        delta_scratch.extend_from_slice(&region?);
     }
 
     delta_decode(delta_scratch, previous, stride, regions, output);
@@ -131,9 +176,17 @@ pub fn decompress_frame(
     stride: usize,
     regions: &[DamageRect],
     output: &mut Vec<u8>,
-) -> Result<(), CompressError> {
+) -> Result<(), CompressorError> {
     let mut scratch = Vec::new();
-    decompress_frame_into(compressed, previous, stride, regions, &mut scratch, output)
+    decompress_frame_into(
+        compressed,
+        previous,
+        stride,
+        regions,
+        &mut scratch,
+        output,
+        CompressorKind::default(),
+    )
 }
 
 #[cfg(test)]

@@ -339,16 +339,14 @@ impl Fsr2Interpolator {
 
         drop(guard);
 
-        // Create native upscaler sharing the same Vulkan context.
-        // Must be created AFTER dropping the guard to avoid deadlock
-        // (with_context also locks the same mutex).
-        // max_render_size = 4K input, display_size = 4K output (covers typical use).
+        // Initialize AMD FSR2 (FidelityFX) upscaler sharing the same Vulkan
+        // context. Created lazily inside (no actual fsr::Context yet — the
+        // real per-resolution context is built on the first upscale call so
+        // its `display_size` matches the real output texture). The dim
+        // hints here are unused. `.ok()` so a missing FSR-capable driver
+        // gracefully degrades to the in-crate EASU+RCAS fallback.
         let native_upscaler = super::fsr2_native::Fsr2NativeInterpolator::with_context(
-            ctx.clone(),
-            3840,  // display_w
-            2160,  // display_h
-            3840,  // max_render_w
-            2160,  // max_render_h
+            ctx.clone(), 0, 0, 0, 0,
         )
         .ok();
 
@@ -752,11 +750,20 @@ impl FrameInterpolator for Fsr2Interpolator {
         dst_w: u32,
         dst_h: u32,
     ) -> Result<GpuFrame, InterpolateError> {
-        // Prefer real FSR SDK for spatial upscaling.
+        // Primary path: AMD FidelityFX FSR2 via the Embark `fsr` crate
+        // (Vulkan compute). The per-resolution `fsr::Context` is built
+        // lazily inside `Fsr2NativeInterpolator` with `display_size`
+        // matching the actual destination; jitter is pinned to zero and
+        // history is reset every dispatch (screen-capture frames carry
+        // no engine jitter / MVs, so accumulating history just ghosts).
+        // Internal RCAS sharpening preserves text crispness — see
+        // `fsr2_native.rs::upscale` for the dispatch parameters.
         if let Some(ref native) = self.native_upscaler {
             return native.upscale(src, dst_w, dst_h);
         }
-        // Fall back to EASU+RCAS compute shaders.
+
+        // Fallback: in-crate EASU + RCAS compute shaders (FSR1-style).
+        // Used only when the FSR SDK could not initialize on this driver.
         let guard = self
             .ctx
             .lock()

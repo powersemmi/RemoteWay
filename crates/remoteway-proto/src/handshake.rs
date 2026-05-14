@@ -18,6 +18,9 @@ pub mod compress_flags {
     pub const LZ4: u8 = 1 << 0;
     /// Zstandard compression (higher ratio).
     pub const ZSTD: u8 = 1 << 1;
+    /// No compression — raw bytes go on the wire (informational; the
+    /// chosen codec is matched out-of-band via `--compress` on both ends).
+    pub const NONE: u8 = 1 << 2;
 }
 
 /// Fixed-size handshake payload exchanged at connection start.
