@@ -244,7 +244,23 @@ impl VulkanContext {
             || name.contains("radeon 9")
     }
 
-    /// Allocate a device-local buffer with the given size and usage.
+    /// Allocate a host-visible buffer, preferring cached memory for fast CPU reads.
+    /// Falls back to uncached if HOST_CACHED is not available.
+    pub(crate) fn create_host_buffer(
+        &self,
+        size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+    ) -> Result<(vk::Buffer, vk::DeviceMemory), InterpolateError> {
+        let cached = vk::MemoryPropertyFlags::HOST_VISIBLE
+            | vk::MemoryPropertyFlags::HOST_COHERENT
+            | vk::MemoryPropertyFlags::HOST_CACHED;
+        let uncached =
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+        self.create_buffer(size, usage, cached)
+            .or_else(|_| self.create_buffer(size, usage, uncached))
+    }
+
+        /// Allocate a device-local buffer with the given size and usage.
     pub(crate) fn create_buffer(
         &self,
         size: vk::DeviceSize,

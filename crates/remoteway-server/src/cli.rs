@@ -47,6 +47,12 @@ pub struct Cli {
     #[arg(last = true)]
     pub command: Vec<String>,
 
+    /// Capture frame rate limit (10–500 FPS, default 100).
+    /// Skips frames arriving faster than the configured rate to prevent
+    /// pipeline congestion during rapid screen changes.
+    #[arg(long, default_value = "100")]
+    pub capture_fps: u32,
+
     /// Server-side downscale factor before compression (0.1–1.0).
     /// 1.0 = native resolution, 0.5 = half, 0.25 = quarter.
     #[arg(long, default_value = "1.0")]

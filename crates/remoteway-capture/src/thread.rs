@@ -22,6 +22,9 @@ pub struct CaptureThreadConfig {
     pub sched_priority: u8,
     /// SPSC ring buffer capacity for frames.
     pub ring_capacity: usize,
+    /// Maximum capture rate in FPS (10–500, default 100).
+    /// Frames arriving faster than this rate are dropped.
+    pub capture_fps: u32,
 }
 
 impl Default for CaptureThreadConfig {
@@ -30,6 +33,7 @@ impl Default for CaptureThreadConfig {
             core_id: 1,
             sched_priority: 90,
             ring_capacity: 4,
+            capture_fps: 100,
         }
     }
 }
@@ -72,7 +76,7 @@ impl CaptureThread {
             ThreadConfig::new(config.core_id, config.sched_priority, "capture-thread");
 
         let join_handle = thread_config
-            .spawn(move || capture_loop(&mut *backend, producer, &stop, &dropped, &fin))?;
+            .spawn(move || capture_loop(&mut *backend, producer, &stop, &dropped, &fin, config.capture_fps))?;
 
         Ok(Self {
             consumer,
@@ -148,8 +152,15 @@ fn capture_loop(
     stop_flag: &AtomicBool,
     frames_dropped: &AtomicBool,
     finished: &AtomicBool,
+    capture_fps: u32,
 ) -> Result<(), CaptureError> {
+    // Compute frame interval from capture FPS (clamped 10–500).
+    let min_interval = std::time::Duration::from_secs_f64(
+        1.0 / capture_fps.clamp(10, 500) as f64,
+    );
+
     let result = (|| {
+        let mut last_push = std::time::Instant::now();
         loop {
             if stop_flag.load(Ordering::Acquire) {
                 backend.stop();
@@ -165,12 +176,19 @@ fn capture_loop(
                 Err(e) => return Err(e),
             };
 
+            // Rate-limit: drop frames that arrive within 10 ms of the last push.
+            // The next next_frame() call will deliver a fresh frame anyway.
+            if last_push.elapsed() < min_interval {
+                continue;
+            }
+
             // Try to push the frame. If ring is full, drop it and signal the
             // compress thread that damage regions may be inaccurate.
             if producer.push(frame).is_err() {
                 tracing::warn!("capture ring full, dropping frame");
                 frames_dropped.store(true, Ordering::Release);
             }
+            last_push = std::time::Instant::now();
         }
 
         Ok(())
@@ -275,6 +293,7 @@ mod tests {
             core_id: 0,
             sched_priority: 0,
             ring_capacity: 4,
+            capture_fps: 100,
         };
         let mut thread = CaptureThread::spawn(Box::new(InfiniteBackend), config).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -299,6 +318,7 @@ mod tests {
             core_id: 0,
             sched_priority: 0,
             ring_capacity: 4,
+            capture_fps: 100,
         };
         let mut thread = CaptureThread::spawn(Box::new(FailBackend), config).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(50));

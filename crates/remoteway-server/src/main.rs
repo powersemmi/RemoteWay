@@ -263,7 +263,8 @@ async fn run(cli: cli::Cli) -> Result<()> {
     info!(backend = backend.name(), "capture backend ready");
 
     // Spawn capture thread (Core 1, SCHED_FIFO 90).
-    let capture_config = CaptureThreadConfig::default();
+    let mut capture_config = CaptureThreadConfig::default();
+    capture_config.capture_fps = cli.capture_fps;
     let capture = remoteway_capture::thread::CaptureThread::spawn(backend, capture_config)
         .context("failed to spawn capture thread")?;
     info!("capture thread started");

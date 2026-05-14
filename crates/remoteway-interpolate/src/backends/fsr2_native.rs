@@ -134,8 +134,7 @@ impl Fsr2NativeInterpolator {
 
         let fsr_device = unsafe { fsr::vk::get_device(guard.device.clone()) };
 
-        let flags = fsr::InitializationFlagBits::ENABLE_HIGH_DYNAMIC_RANGE
-            | fsr::InitializationFlagBits::ENABLE_DEPTH_INFINITE
+        let flags = fsr::InitializationFlagBits::ENABLE_DEPTH_INFINITE
             | fsr::InitializationFlagBits::ENABLE_DEPTH_INVERTED;
 
         let context_desc = fsr::ContextDescription {
@@ -319,7 +318,6 @@ impl Fsr2NativeInterpolator {
 
         Ok((image, mem, image_view))
     }
-
 }
 
 /// Record an image memory barrier (simple layout transition, single mip/array layer).
@@ -344,14 +342,17 @@ unsafe fn cmd_image_barrier_simple(
                 .base_array_layer(0)
                 .layer_count(1),
         );
-    device.cmd_pipeline_barrier(
-        cmd,
-        vk::PipelineStageFlags::TOP_OF_PIPE,
-        vk::PipelineStageFlags::TRANSFER,
-        vk::DependencyFlags::empty(),
-        &[], &[],
-        std::slice::from_ref(&barrier),
-    );
+    unsafe {
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            std::slice::from_ref(&barrier),
+        );
+    }
 }
 
 /// Record a buffer-to-image copy.
@@ -376,11 +377,15 @@ unsafe fn copy_buf_to_image(
         )
         .image_offset(vk::Offset3D::default())
         .image_extent(vk::Extent3D::default().width(width).height(height).depth(1));
-    device.cmd_copy_buffer_to_image(
-        cmd, src_buf, dst_image,
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-        std::slice::from_ref(&region),
-    );
+    unsafe {
+        device.cmd_copy_buffer_to_image(
+            cmd,
+            src_buf,
+            dst_image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            std::slice::from_ref(&region),
+        );
+    }
 }
 
 impl FrameInterpolator for Fsr2NativeInterpolator {
@@ -411,22 +416,25 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
         let src_h = src.height;
 
         // Acquire frame index.
-        let mut fidx = self.frame_idx.lock().map_err(|e| {
-            InterpolateError::InterpolateFailed(format!("frame_idx lock: {e}"))
-        })?;
+        let mut fidx = self
+            .frame_idx
+            .lock()
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("frame_idx lock: {e}")))?;
         let frame_idx = *fidx;
         *fidx = frame_idx.wrapping_add(1);
         drop(fidx);
 
         // Lock Vulkan context for the entire operation.
-        let vk_ctx = self.ctx.lock().map_err(|e| {
-            InterpolateError::InterpolateFailed(format!("vk ctx lock: {e}"))
-        })?;
+        let vk_ctx = self
+            .ctx
+            .lock()
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("vk ctx lock: {e}")))?;
 
         // --- Ensure cached resources match current dimensions ---
-        let mut cache = self.cached_res.lock().map_err(|e| {
-            InterpolateError::InterpolateFailed(format!("cached_res lock: {e}"))
-        })?;
+        let mut cache = self
+            .cached_res
+            .lock()
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("cached_res lock: {e}")))?;
 
         let needs_recreate = match cache.as_ref() {
             Some(c) => c.src_w != src_w || c.src_h != src_h || c.dst_w != dst_w || c.dst_h != dst_h,
@@ -457,7 +465,9 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
                     vk_ctx.device.free_memory(old.staging_mv_mem, None);
                     vk_ctx.device.destroy_buffer(old.readback_buf, None);
                     vk_ctx.device.free_memory(old.readback_mem, None);
-                    vk_ctx.device.free_command_buffers(vk_ctx.command_pool, &[old.cmd]);
+                    vk_ctx
+                        .device
+                        .free_command_buffers(vk_ctx.command_pool, &[old.cmd]);
                 }
             }
 
@@ -468,58 +478,95 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
                 | vk::ImageUsageFlags::TRANSFER_DST;
 
             let (color_image, color_mem, color_view) = Self::create_fsr_image(
-                &vk_ctx.device, &vk_ctx.instance, vk_ctx.physical_device,
-                src_w, src_h, fsr_usage,
+                &vk_ctx.device,
+                &vk_ctx.instance,
+                vk_ctx.physical_device,
+                src_w,
+                src_h,
+                fsr_usage,
             )?;
             let (depth_image, depth_mem, depth_view) = Self::create_fsr_image_format(
-                &vk_ctx.device, &vk_ctx.instance, vk_ctx.physical_device,
-                src_w, src_h, fsr_usage, vk::Format::R32_SFLOAT,
+                &vk_ctx.device,
+                &vk_ctx.instance,
+                vk_ctx.physical_device,
+                src_w,
+                src_h,
+                fsr_usage,
+                vk::Format::R32_SFLOAT,
             )?;
             let (mv_image, mv_mem, mv_view) = Self::create_fsr_image_format(
-                &vk_ctx.device, &vk_ctx.instance, vk_ctx.physical_device,
-                src_w, src_h, fsr_usage, vk::Format::R16G16_SFLOAT,
+                &vk_ctx.device,
+                &vk_ctx.instance,
+                vk_ctx.physical_device,
+                src_w,
+                src_h,
+                fsr_usage,
+                vk::Format::R16G16_SFLOAT,
             )?;
             let (output_image, output_mem, output_view) = Self::create_fsr_image(
-                &vk_ctx.device, &vk_ctx.instance, vk_ctx.physical_device,
-                dst_w, dst_h, fsr_usage,
+                &vk_ctx.device,
+                &vk_ctx.instance,
+                vk_ctx.physical_device,
+                dst_w,
+                dst_h,
+                fsr_usage,
             )?;
 
             let src_size = (src_w * src_h * 4) as u64;
             let mv_size = (src_w * src_h * 4) as u64;
-            let (scb, scm) = vk_ctx.create_buffer(src_size,
+            let (scb, scm) = vk_ctx.create_host_buffer(
+                src_size,
                 vk::BufferUsageFlags::TRANSFER_SRC,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
-            let (sdb, sdm) = vk_ctx.create_buffer(src_size,
+            )?;
+            let (sdb, sdm) = vk_ctx.create_host_buffer(
+                src_size,
                 vk::BufferUsageFlags::TRANSFER_SRC,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
-            let (smb, smm) = vk_ctx.create_buffer(mv_size,
+            )?;
+            let (smb, smm) = vk_ctx.create_host_buffer(
+                mv_size,
                 vk::BufferUsageFlags::TRANSFER_SRC,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
+            )?;
 
             let dst_size = (dst_w * dst_h * 4) as u64;
-            let (rb, rm) = vk_ctx.create_buffer(dst_size,
+            let (rb, rm) = vk_ctx.create_host_buffer(
+                dst_size,
                 vk::BufferUsageFlags::TRANSFER_DST,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
+            )?;
 
             let cmd = vk_ctx.allocate_command_buffer()?;
 
             *cache = Some(CachedResources {
-                src_w, src_h, dst_w, dst_h,
-                color_image, color_mem, color_view,
-                depth_image, depth_mem, depth_view,
-                mv_image, mv_mem, mv_view,
-                output_image, output_mem, output_view,
-                staging_color_buf: scb, staging_color_mem: scm,
-                staging_depth_buf: sdb, staging_depth_mem: sdm,
-                staging_mv_buf: smb, staging_mv_mem: smm,
-                readback_buf: rb, readback_mem: rm,
+                src_w,
+                src_h,
+                dst_w,
+                dst_h,
+                color_image,
+                color_mem,
+                color_view,
+                depth_image,
+                depth_mem,
+                depth_view,
+                mv_image,
+                mv_mem,
+                mv_view,
+                output_image,
+                output_mem,
+                output_view,
+                staging_color_buf: scb,
+                staging_color_mem: scm,
+                staging_depth_buf: sdb,
+                staging_depth_mem: sdm,
+                staging_mv_buf: smb,
+                staging_mv_mem: smm,
+                readback_buf: rb,
+                readback_mem: rm,
                 readback_size: dst_size,
                 cmd,
             });
         }
 
         let res = cache.as_ref().unwrap();
-        let src_size = (src_w * src_h * 4) as u64;
+        let _src_size = (src_w * src_h * 4) as u64;
         let mv_size = (src_w * src_h * 4) as u64;
         let dst_size = res.readback_size;
 
@@ -543,35 +590,92 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
         let cmd = res.cmd;
         let begin_info = vk::CommandBufferBeginInfo::default();
         unsafe {
-            vk_ctx.device.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
+            vk_ctx
+                .device
+                .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
                 .map_err(|e| InterpolateError::InterpolateFailed(format!("reset cmd: {e}")))?;
-            vk_ctx.device.begin_command_buffer(cmd, &begin_info)
+            vk_ctx
+                .device
+                .begin_command_buffer(cmd, &begin_info)
                 .map_err(|e| InterpolateError::InterpolateFailed(format!("begin cmd: {e}")))?;
 
             // Upload images via staging.
-            cmd_image_barrier_simple(&vk_ctx.device, cmd, res.color_image,
-                vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
-            copy_buf_to_image(&vk_ctx.device, cmd,
-                res.staging_color_buf, res.color_image, src_w, src_h);
-            cmd_image_barrier_simple(&vk_ctx.device, cmd, res.color_image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+            cmd_image_barrier_simple(
+                &vk_ctx.device,
+                cmd,
+                res.color_image,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            );
+            copy_buf_to_image(
+                &vk_ctx.device,
+                cmd,
+                res.staging_color_buf,
+                res.color_image,
+                src_w,
+                src_h,
+            );
+            cmd_image_barrier_simple(
+                &vk_ctx.device,
+                cmd,
+                res.color_image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            );
 
-            cmd_image_barrier_simple(&vk_ctx.device, cmd, res.depth_image,
-                vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
-            copy_buf_to_image(&vk_ctx.device, cmd,
-                res.staging_depth_buf, res.depth_image, src_w, src_h);
-            cmd_image_barrier_simple(&vk_ctx.device, cmd, res.depth_image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+            cmd_image_barrier_simple(
+                &vk_ctx.device,
+                cmd,
+                res.depth_image,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            );
+            copy_buf_to_image(
+                &vk_ctx.device,
+                cmd,
+                res.staging_depth_buf,
+                res.depth_image,
+                src_w,
+                src_h,
+            );
+            cmd_image_barrier_simple(
+                &vk_ctx.device,
+                cmd,
+                res.depth_image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            );
 
-            cmd_image_barrier_simple(&vk_ctx.device, cmd, res.mv_image,
-                vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
-            copy_buf_to_image(&vk_ctx.device, cmd,
-                res.staging_mv_buf, res.mv_image, src_w, src_h);
-            cmd_image_barrier_simple(&vk_ctx.device, cmd, res.mv_image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+            cmd_image_barrier_simple(
+                &vk_ctx.device,
+                cmd,
+                res.mv_image,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            );
+            copy_buf_to_image(
+                &vk_ctx.device,
+                cmd,
+                res.staging_mv_buf,
+                res.mv_image,
+                src_w,
+                src_h,
+            );
+            cmd_image_barrier_simple(
+                &vk_ctx.device,
+                cmd,
+                res.mv_image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            );
 
-            cmd_image_barrier_simple(&vk_ctx.device, cmd, res.output_image,
-                vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL);
+            cmd_image_barrier_simple(
+                &vk_ctx.device,
+                cmd,
+                res.output_image,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::GENERAL,
+            );
 
             let xfer_barrier = vk::MemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
@@ -581,52 +685,78 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
                 vk::PipelineStageFlags::TRANSFER,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::DependencyFlags::empty(),
-                &[xfer_barrier], &[], &[],
+                &[xfer_barrier],
+                &[],
+                &[],
             );
 
-            vk_ctx.device.end_command_buffer(cmd)
-                .map_err(|e| InterpolateError::InterpolateFailed(format!("end upload cmd: {e}")))?;
+            // Command buffer stays in recording state for FSR dispatch below.
         }
 
-        vk_ctx.submit_and_wait(cmd)?;
-
-        // --- FSR 2 dispatch ---
-        let mut fsr_guard = self.fsr_ctx.lock().map_err(|e| {
-            InterpolateError::InterpolateFailed(format!("fsr ctx lock: {e}"))
-        })?;
+        // --- FSR 2 dispatch (records into the SAME command buffer) ---
+        let mut fsr_guard = self
+            .fsr_ctx
+            .lock()
+            .map_err(|e| InterpolateError::InterpolateFailed(format!("fsr ctx lock: {e}")))?;
 
         let color_res = unsafe {
-            fsr::vk::get_texture_resource(&mut fsr_guard, res.color_image, res.color_view,
-                vk::Format::R8G8B8A8_UNORM, [src_w, src_h],
-                fsr::ResourceStates::COMPUTE_READ, "color")
+            fsr::vk::get_texture_resource(
+                &mut fsr_guard,
+                res.color_image,
+                res.color_view,
+                vk::Format::R8G8B8A8_UNORM,
+                [src_w, src_h],
+                fsr::ResourceStates::COMPUTE_READ,
+                "color",
+            )
         };
         let depth_res = unsafe {
-            fsr::vk::get_texture_resource(&mut fsr_guard, res.depth_image, res.depth_view,
-                vk::Format::R32_SFLOAT, [src_w, src_h],
-                fsr::ResourceStates::COMPUTE_READ, "depth")
+            fsr::vk::get_texture_resource(
+                &mut fsr_guard,
+                res.depth_image,
+                res.depth_view,
+                vk::Format::R32_SFLOAT,
+                [src_w, src_h],
+                fsr::ResourceStates::COMPUTE_READ,
+                "depth",
+            )
         };
         let mv_res = unsafe {
-            fsr::vk::get_texture_resource(&mut fsr_guard, res.mv_image, res.mv_view,
-                vk::Format::R16G16_SFLOAT, [src_w, src_h],
-                fsr::ResourceStates::COMPUTE_READ, "motion_vectors")
+            fsr::vk::get_texture_resource(
+                &mut fsr_guard,
+                res.mv_image,
+                res.mv_view,
+                vk::Format::R16G16_SFLOAT,
+                [src_w, src_h],
+                fsr::ResourceStates::COMPUTE_READ,
+                "motion_vectors",
+            )
         };
         let output_res = unsafe {
-            fsr::vk::get_texture_resource(&mut fsr_guard, res.output_image, res.output_view,
-                vk::Format::R8G8B8A8_UNORM, [dst_w, dst_h],
-                fsr::ResourceStates::COMPUTE_READ, "output")
+            fsr::vk::get_texture_resource(
+                &mut fsr_guard,
+                res.output_image,
+                res.output_view,
+                vk::Format::R8G8B8A8_UNORM,
+                [dst_w, dst_h],
+                fsr::ResourceStates::COMPUTE_READ,
+                "output",
+            )
         };
 
         let jx = halton((frame_idx & 255) as u32, 2) - 0.5;
         let jy = halton((frame_idx & 255) as u32, 3) - 0.5;
 
-        let dispatch_cmd = vk_ctx.allocate_command_buffer()?;
-        unsafe { vk_ctx.device.begin_command_buffer(dispatch_cmd, &begin_info) }
-            .map_err(|e| InterpolateError::InterpolateFailed(format!("begin dispatch cmd: {e}")))?;
-
-        let cmd_list: fsr::CommandList = dispatch_cmd.into();
+        // FSR dispatch records into cmd (still in recording state after upload).
+        let cmd_list: fsr::CommandList = cmd.into();
         let desc = fsr::DispatchDescription::new(
-            cmd_list, color_res, depth_res, mv_res, output_res,
-            1.0 / 60.0, [src_w, src_h],
+            cmd_list,
+            color_res,
+            depth_res,
+            mv_res,
+            output_res,
+            1.0 / 60.0,
+            [src_w, src_h],
         )
         .jitter_offset([jx, jy])
         .sharpness(0.5);
@@ -635,40 +765,67 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
             .map_err(|e| InterpolateError::InterpolateFailed(format!("FSR dispatch: {e}")))?;
         drop(fsr_guard);
 
-        unsafe { vk_ctx.device.end_command_buffer(dispatch_cmd) }
-            .map_err(|e| InterpolateError::InterpolateFailed(format!("end dispatch cmd: {e}")))?;
-        vk_ctx.submit_and_wait(dispatch_cmd)?;
-
-        // --- Read back ---
-        let readback_cmd = vk_ctx.allocate_command_buffer()?;
-        unsafe { vk_ctx.device.begin_command_buffer(readback_cmd, &begin_info) }
-            .map_err(|e| InterpolateError::InterpolateFailed(format!("begin readback cmd: {e}")))?;
-
+        // After FSR dispatch, transition output image and copy to readback buffer
+        // — all within the same command buffer.
         unsafe {
-            cmd_image_barrier_simple(&vk_ctx.device, readback_cmd, res.output_image,
-                vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
+            // Barrier: make output image readable for transfer after FSR write.
+            let out_barrier = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::GENERAL)
+                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(res.output_image)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .base_mip_level(0)
+                        .level_count(1)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                )
+                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
+            vk_ctx.device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                std::slice::from_ref(&out_barrier),
+            );
+
             let copy_region = vk::BufferImageCopy::default()
-                .buffer_offset(0).buffer_row_length(0).buffer_image_height(0)
-                .image_subresource(vk::ImageSubresourceLayers::default()
-                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                    .mip_level(0).base_array_layer(0).layer_count(1))
+                .buffer_offset(0)
+                .buffer_row_length(0)
+                .buffer_image_height(0)
+                .image_subresource(
+                    vk::ImageSubresourceLayers::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .mip_level(0)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                )
                 .image_offset(vk::Offset3D::default())
                 .image_extent(vk::Extent3D::default().width(dst_w).height(dst_h).depth(1));
             vk_ctx.device.cmd_copy_image_to_buffer(
-                readback_cmd, res.output_image,
+                cmd,
+                res.output_image,
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                res.readback_buf, std::slice::from_ref(&copy_region));
-            vk_ctx.device.end_command_buffer(readback_cmd)
-                .map_err(|e| InterpolateError::InterpolateFailed(format!("end readback cmd: {e}")))?;
+                res.readback_buf,
+                std::slice::from_ref(&copy_region),
+            );
+
+            vk_ctx
+                .device
+                .end_command_buffer(cmd)
+                .map_err(|e| InterpolateError::InterpolateFailed(format!("end dr cmd: {e}")))?;
         }
 
-        vk_ctx.submit_and_wait(readback_cmd)?;
+        // Single submit for both dispatch and readback.
+        vk_ctx.submit_and_wait(cmd)?;
 
         let result_data = vk_ctx.read_from_buffer(res.readback_mem, dst_size as usize)?;
-
-        unsafe {
-            vk_ctx.device.free_command_buffers(vk_ctx.command_pool, &[dispatch_cmd, readback_cmd]);
-        }
 
         Ok(GpuFrame {
             data: result_data,
@@ -692,7 +849,9 @@ impl Drop for Fsr2NativeInterpolator {
     fn drop(&mut self) {
         // Destroy FSR context.
         if let Ok(mut ctx) = self.fsr_ctx.lock() {
-            unsafe { let _ = ctx.destroy(); }
+            unsafe {
+                let _ = ctx.destroy();
+            }
         }
         // Destroy cached GPU resources.
         if let Ok(mut cache) = self.cached_res.lock()
@@ -720,7 +879,12 @@ impl Drop for Fsr2NativeInterpolator {
                     vk_ctx.device.free_memory(res.staging_mv_mem, None);
                     vk_ctx.device.destroy_buffer(res.readback_buf, None);
                     vk_ctx.device.free_memory(res.readback_mem, None);
-                    vk_ctx.device.free_command_buffers(vk_ctx.command_pool, &[res.cmd]);
+                    vk_ctx
+                        .device
+                        .free_command_buffers(vk_ctx.command_pool, &[res.cmd]);
+                    vk_ctx
+                        .device
+                        .free_command_buffers(vk_ctx.command_pool, &[res.cmd]);
                 }
             }
         }

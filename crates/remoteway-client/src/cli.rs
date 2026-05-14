@@ -80,6 +80,11 @@ pub struct Cli {
     #[arg(long)]
     pub app_id: Option<String>,
 
+    /// Server-side capture FPS limit (10–500, default 100).
+    /// Caps frame capture rate to prevent pipeline congestion.
+    #[arg(long, default_value = "100")]
+    pub capture_fps: u32,
+
     /// Path to remoteway-server on remote host
     #[arg(long, default_value = "remoteway-server")]
     pub server_bin: String,
@@ -114,6 +119,10 @@ impl Cli {
             args.push("--app-id".to_string());
             args.push(app_id.clone());
         }
+
+        // Forward capture FPS limit.
+        args.push("--capture-fps".to_string());
+        args.push(self.capture_fps.to_string());
 
         // Forward server-side scale factor.
         if (self.server_scale - 1.0).abs() > f64::EPSILON {

@@ -51,6 +51,9 @@ pub struct ManagedSurface {
     frame_callback_requested_at: Option<std::time::Instant>,
     /// Serial from the last `xdg_surface.configure` event.
     pending_configure_serial: Option<u32>,
+    /// Server content aspect ratio (width / height), set from first frame.
+    #[allow(dead_code)]
+    aspect_ratio: f64,
 }
 
 /// Maximum time we wait for `wl_surface.frame` `done` before giving up and
@@ -240,6 +243,7 @@ impl WaylandDisplay {
         app_id: &str,
         width: u32,
         height: u32,
+        aspect_ratio: f64,
     ) -> Result<(), DisplayError> {
         let compositor = self
             .state
@@ -289,6 +293,7 @@ impl WaylandDisplay {
             frame_callback_pending: false,
             frame_callback_requested_at: None,
             pending_configure_serial: None,
+            aspect_ratio,
         });
 
         // Roundtrip to receive configure event. Dispatch count is irrelevant.
@@ -713,6 +718,8 @@ impl Dispatch<xdg_toplevel::XdgToplevel, u16> for DisplayState {
                     .find(|s| s.surface_id == surface_id)
                 && let Some(ref viewport) = surface.viewport
             {
+                // Preserve server aspect ratio via viewport destination.
+                // Letterbox/pillarbox when window proportions differ from content.
                 let (fit_w, fit_h) =
                     fit_preserve_aspect(surface.width, surface.height, width, height);
                 viewport.set_destination(fit_w, fit_h);

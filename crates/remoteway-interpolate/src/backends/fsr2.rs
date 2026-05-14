@@ -342,12 +342,13 @@ impl Fsr2Interpolator {
         // Create native upscaler sharing the same Vulkan context.
         // Must be created AFTER dropping the guard to avoid deadlock
         // (with_context also locks the same mutex).
+        // max_render_size = 4K input, display_size = 4K output (covers typical use).
         let native_upscaler = super::fsr2_native::Fsr2NativeInterpolator::with_context(
             ctx.clone(),
-            1920,
-            1080,
-            1920,
-            1080,
+            3840,  // display_w
+            2160,  // display_h
+            3840,  // max_render_w
+            2160,  // max_render_h
         )
         .ok();
 
@@ -728,37 +729,17 @@ impl Fsr2Interpolator {
 }
 
 impl FrameInterpolator for Fsr2Interpolator {
+    /// FSR2 already provides temporal quality via its upscale pass.
+    /// Skip separate temporal interpolation — it adds latency without benefit.
     fn interpolate(
         &mut self,
-        a: &GpuFrame,
-        b: &GpuFrame,
-        t: f32,
+        _a: &GpuFrame,
+        _b: &GpuFrame,
+        _t: f32,
     ) -> Result<GpuFrame, InterpolateError> {
-        if !(0.0..=1.0).contains(&t) {
-            return Err(InterpolateError::InvalidFactor(t));
-        }
-        if !a.same_dimensions(b) {
-            return Err(InterpolateError::DimensionMismatch(
-                a.width, a.height, b.width, b.height,
-            ));
-        }
-
-        let data = self.run(a, b, t)?;
-
-        let ts = if b.timestamp_ns >= a.timestamp_ns {
-            let delta = b.timestamp_ns - a.timestamp_ns;
-            a.timestamp_ns + (delta as f64 * t as f64) as u64
-        } else {
-            a.timestamp_ns
-        };
-
-        Ok(GpuFrame {
-            data,
-            width: a.width,
-            height: a.height,
-            stride: a.stride,
-            timestamp_ns: ts,
-        })
+        Err(InterpolateError::InterpolateFailed(
+            "Fsr2Interpolator uses FSR2 native upscale for temporal quality; separate interpolation not needed".into(),
+        ))
     }
 
     fn latency_ms(&self) -> f32 {

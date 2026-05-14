@@ -133,7 +133,7 @@ impl Drop for DisplayThread {
 /// How long the display loop sleeps when idle (no pending frame and nothing
 /// new in the ring). Short enough to keep latency low, long enough to avoid
 /// burning a full CPU core.
-const IDLE_SLEEP: std::time::Duration = std::time::Duration::from_micros(500);
+const IDLE_SLEEP: std::time::Duration = std::time::Duration::from_millis(10);
 
 fn display_loop(
     mut consumer: rtrb::Consumer<DisplayFrame>,
@@ -142,6 +142,9 @@ fn display_loop(
     use crate::surface::WaylandDisplay;
 
     let mut display = WaylandDisplay::new()?;
+
+    // Remember server aspect ratio from first frame for window locking.
+    let mut aspect_ratio: Option<f64> = None;
 
     // Holds the most recent frame per surface that hasn't been committed yet.
     // When the compositor is busy (frame callback pending / buffer not released),
@@ -169,12 +172,22 @@ fn display_loop(
         if let Some(frame) = pending_frame.take() {
             // Ensure surface exists.
             if display.get_surface(frame.surface_id).is_none() {
+                let ar = aspect_ratio.unwrap_or_else(|| {
+                    let r = if frame.height > 0 {
+                        frame.width as f64 / frame.height as f64
+                    } else {
+                        1.0
+                    };
+                    aspect_ratio = Some(r);
+                    r
+                });
                 display.create_surface(
                     frame.surface_id,
                     &format!("RemoteWay #{}", frame.surface_id),
                     "remoteway",
                     frame.width,
                     frame.height,
+                    ar,
                 )?;
             }
 

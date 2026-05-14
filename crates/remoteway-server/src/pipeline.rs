@@ -24,9 +24,6 @@ use crate::cli::{CaptureBackendArg, CompressArg};
 /// Maximum chunk size for frame data on the wire (64 KiB).
 const CHUNK_SIZE: usize = 64 * 1024;
 
-/// How many empty polls before yielding the thread.
-const SPIN_YIELD_THRESHOLD: u32 = 64;
-
 /// Send an anchor frame every N frames to prevent error accumulation
 /// and enable resync after packet loss.
 const ANCHOR_INTERVAL: u64 = 300;
@@ -210,7 +207,6 @@ pub fn compress_send_loop(
     let mut previous_frame: Vec<u8> = Vec::new();
     let mut is_first = true;
     let mut frame_count: u64 = 0;
-    let mut empty_polls: u32 = 0;
     let mut need_full_damage = false;
     let mut scaled_buf: Vec<u8> = Vec::new();
     let do_downscale = (scale - 1.0).abs() > f64::EPSILON;
@@ -220,23 +216,17 @@ pub fn compress_send_loop(
         // are stale — processing them would only add pipeline latency.
         let mut frame = match capture.try_recv() {
             Some(f) => {
-                empty_polls = 0;
                 f
             }
             None => {
-                // If capture thread has exited (toplevel closed, session ended),
-                // signal shutdown so the server terminates gracefully.
                 if capture.is_finished() {
                     info!("capture thread finished, signalling shutdown");
                     shutdown.store(true, Ordering::Release);
                     break;
                 }
-                empty_polls += 1;
-                if empty_polls >= SPIN_YIELD_THRESHOLD {
-                    std::thread::yield_now();
-                } else {
-                    std::hint::spin_loop();
-                }
+                // No frame ready: sleep briefly instead of spin-waiting.
+                // 2 ms keeps latency low while yielding the CPU.
+                std::thread::sleep(std::time::Duration::from_millis(2));
                 continue;
             }
         };
