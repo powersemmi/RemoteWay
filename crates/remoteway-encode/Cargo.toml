@@ -24,7 +24,7 @@ ffmpeg-next = { workspace = true, optional = true }
 tempfile = { version = "3", optional = true }
 
 [features]
-default = ["h265"]
+default = ["h264", "h265", "av1"]
 h264 = []
 h265 = []
 av1 = []

@@ -158,15 +158,25 @@ fn upload_nv12_image(
     let compute_queue = ctx.compute_queue;
 
     // VideoProfileListInfoKHR is required for video-encode-usage images.
-    let mut h265_profile = vk::VideoEncodeH265ProfileInfoKHR::default().std_profile_idc(
-        ash::vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN,
-    );
-    let mut profile = vk::VideoProfileInfoKHR::default()
+    // The codec-specific profile-info struct must be chained on `profile`,
+    // matching the encoder's profile or `vkCreateImage`/`vkCreateBuffer`
+    // will fail (validator: VUID-VkVideoProfileInfoKHR-videoCodecOperation-*).
+    let mut h264_profile = vk::VideoEncodeH264ProfileInfoKHR::default()
+        .std_profile_idc(ash::vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_HIGH);
+    let mut h265_profile = vk::VideoEncodeH265ProfileInfoKHR::default()
+        .std_profile_idc(ash::vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN);
+    let mut av1_profile = vk::VideoEncodeAV1ProfileInfoKHR::default()
+        .std_profile(ash::vk::native::StdVideoAV1Profile_STD_VIDEO_AV1_PROFILE_MAIN);
+    let profile_builder = vk::VideoProfileInfoKHR::default()
         .video_codec_operation(codec.codec_operation())
         .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::TYPE_420)
         .luma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
-        .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
-        .push(&mut h265_profile);
+        .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8);
+    let profile = match codec {
+        VideoCodec::H264 => profile_builder.push(&mut h264_profile),
+        VideoCodec::H265 => profile_builder.push(&mut h265_profile),
+        VideoCodec::Av1 => profile_builder.push(&mut av1_profile),
+    };
     let profile_ref = &profile;
     let mut profile_list =
         vk::VideoProfileListInfoKHR::default().profiles(std::slice::from_ref(profile_ref));
@@ -174,7 +184,11 @@ fn upload_nv12_image(
     let image_info = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
         .format(vk::Format::G8_B8R8_2PLANE_420_UNORM)
-        .extent(vk::Extent3D { width, height, depth: 1 })
+        .extent(vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        })
         .mip_levels(1)
         .array_layers(1)
         .samples(vk::SampleCountFlags::TYPE_1)
@@ -270,9 +284,7 @@ fn upload_nv12_image(
             .image(image)
             .subresource_range(
                 vk::ImageSubresourceRange::default()
-                    .aspect_mask(
-                        vk::ImageAspectFlags::PLANE_0 | vk::ImageAspectFlags::PLANE_1,
-                    )
+                    .aspect_mask(vk::ImageAspectFlags::PLANE_0 | vk::ImageAspectFlags::PLANE_1)
                     .base_mip_level(0)
                     .level_count(1)
                     .base_array_layer(0)
@@ -303,7 +315,11 @@ fn upload_nv12_image(
                     .layer_count(1),
             )
             .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
-            .image_extent(vk::Extent3D { width, height, depth: 1 });
+            .image_extent(vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            });
         ctx.device.cmd_copy_buffer_to_image(
             cmd,
             staging_buf,
@@ -348,9 +364,7 @@ fn upload_nv12_image(
             .image(image)
             .subresource_range(
                 vk::ImageSubresourceRange::default()
-                    .aspect_mask(
-                        vk::ImageAspectFlags::PLANE_0 | vk::ImageAspectFlags::PLANE_1,
-                    )
+                    .aspect_mask(vk::ImageAspectFlags::PLANE_0 | vk::ImageAspectFlags::PLANE_1)
                     .base_mip_level(0)
                     .level_count(1)
                     .base_array_layer(0)
@@ -422,9 +436,7 @@ fn upload_nv12_image(
             .image(image)
             .subresource_range(
                 vk::ImageSubresourceRange::default()
-                    .aspect_mask(
-                        vk::ImageAspectFlags::PLANE_0 | vk::ImageAspectFlags::PLANE_1,
-                    )
+                    .aspect_mask(vk::ImageAspectFlags::PLANE_0 | vk::ImageAspectFlags::PLANE_1)
                     .base_mip_level(0)
                     .level_count(1)
                     .base_array_layer(0)
@@ -448,7 +460,8 @@ fn upload_nv12_image(
             .device
             .create_fence(&vk::FenceCreateInfo::default(), None)
             .map_err(|e| format!("acquire fence: {e:?}"))?;
-        let a_submit = vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&acquire_cmd));
+        let a_submit =
+            vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&acquire_cmd));
         ctx.device
             .queue_submit(encode_queue, &[a_submit], a_fence)
             .map_err(|e| format!("acquire submit: {e:?}"))?;
