@@ -256,9 +256,19 @@ impl VulkanContext {
             .map(|ext| ext.as_ptr())
             .collect();
 
-        let device_info = vk::DeviceCreateInfo::default()
+        // AV1 encode requires PhysicalDeviceVideoEncodeAV1FeaturesKHR.video_encode_av1
+        // to be explicitly enabled at device creation. H.264/H.265 don't gate
+        // device creation on a dedicated feature struct.
+        let want_av1 = request.video_codecs.contains(&VideoCodec::Av1);
+        let mut av1_feature =
+            vk::PhysicalDeviceVideoEncodeAV1FeaturesKHR::default().video_encode_av1(want_av1);
+
+        let mut device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_infos)
             .enabled_extension_names(&ext_ptrs);
+        if want_av1 {
+            device_info = device_info.push(&mut av1_feature);
+        }
 
         let device = unsafe { instance.create_device(physical_device, &device_info, None) }
             .map_err(|e| {
