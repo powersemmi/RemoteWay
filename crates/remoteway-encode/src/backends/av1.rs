@@ -423,15 +423,9 @@ impl Encoder for Av1Encoder {
             current_frame_id: 0,
             order_hint,
             primary_ref_frame,
-            // refresh_frame_flags: which of AV1's 8 saved-frame buffer slots
-            // get overwritten by this frame. KEY frames MUST refresh all 8
-            // slots per AV1 spec (5.9.1: allFrames = 0xff). INTER frames in
-            // single-reference low-latency mode refresh just slot 0.
-            refresh_frame_flags: if is_key {
-                0xff
-            } else {
-                REFRESH_LAST_FRAME_ONLY
-            },
+            // refresh_frame_flags: 0xff for KEY (spec-required), 0x01 for
+            // INTER (only LAST_FRAME slot used in single-ref low-latency).
+            refresh_frame_flags: if is_key { 0xff } else { REFRESH_LAST_FRAME_ONLY },
             coded_denom: 0,
             render_width_minus_1: (self.params.width - 1) as u16,
             render_height_minus_1: (self.params.height - 1) as u16,
@@ -936,12 +930,8 @@ fn build_seq_header(width: u32, height: u32) -> SeqHeaderStorage {
         delta_frame_id_length_minus_2: 0,
         additional_frame_id_length_minus_1: 0,
         order_hint_bits_minus_1: 7, // OrderHintBits = 8
-        // STD_VIDEO_AV1_SELECT_INTEGER_MV = 2 and
-        // STD_VIDEO_AV1_SELECT_SCREEN_CONTENT_TOOLS = 2 are the SELECT
-        // sentinels — per-frame picture-info flags pick the values
-        // dynamically. Required for desktop/screen-content compression.
-        seq_force_integer_mv: 2,
-        seq_force_screen_content_tools: 2,
+        seq_force_integer_mv: 2,            // STD_VIDEO_AV1_SELECT_INTEGER_MV
+        seq_force_screen_content_tools: 2,  // STD_VIDEO_AV1_SELECT_SCREEN_CONTENT_TOOLS
         reserved1: [0; 5],
         pColorConfig: &*color,
         pTimingInfo: std::ptr::null(),
