@@ -86,10 +86,10 @@ This enables the xdg-desktop-portal + `GStreamer` capture backend for GNOME and 
 cargo build --release --features gpu
 
 # Specific backends
-cargo build --release --features dlss      # NVIDIA DLSS (RTX 40-series+)
-cargo build --release --features fsr3      # AMD FSR 3 (RDNA3+)
-cargo build --release --features fsr2      # AMD FSR 2 (Vulkan)
-cargo build --release --features nvidia-of # NVIDIA Optical Flow
+cargo build --release --features dlss                  # NVIDIA DLSS (RTX 40-series+)
+cargo build --release --features fsr3                  # AMD FSR 3 (RDNA3+)
+cargo build --release --features fsr2 fsr2-native      # AMD FSR 2 (Vulkan)
+cargo build --release --features nvidia-of             # NVIDIA Optical Flow
 
 # Everything (portal + all GPU backends + RIFE)
 cargo build --release --features all,portal
@@ -115,32 +115,74 @@ RUST_LOG=remoteway=debug remoteway user@host
 ### Options
 
 ```
-remoteway [OPTIONS] <HOST> [-- <COMMAND>...]
+Usage: remoteway-client [OPTIONS] <HOST> [-- <COMMAND>...]
 
 Arguments:
-  <HOST>         Remote host in [user@]host format
-  [COMMAND]...   Command to launch on the remote side
+  <HOST>
+          Remote host in [user@]host format
+
+  [COMMAND]...
+          Command to launch on the remote side (passed after --)
 
 Options:
-  --capture <BACKEND>          Capture backend for the remote server
-                               [auto|wlr-screencopy|ext-image-capture|portal]
-                               [default: auto]
-  --compress <lz4|zstd>        Compression algorithm [default: lz4]
-  --no-interpolate             Disable frame interpolation
-  --interpolation-backend <BACKEND>
-                               Interpolation backend (overrides auto-detection)
-                               Auto order: dlss → fsr3-hardware → fsr2 → linear-blend
-                               [dlss|fsr3-hardware|fsr2|linear-blend|nvidia-optical-flow|wgpu-optical-flow|rife]
-  --server-scale <FACTOR>      Server-side downscale factor (0.1–1.0)
-                               1.0 = native, 0.5 = half [default: 1.0]
-  --upscale <FACTOR>           Client-side upscale factor (1.0–2.0)
-                               1.0 = as-is, 2.0 = double [default: 1.0]
-  --app-id <APP_ID>            Capture a specific window by app_id on the
-                               remote side (e.g. "org.mozilla.firefox")
-  --server-bin <PATH>          Path to remoteway-server on remote host
-                               [default: remoteway-server]
-  --ssh-opt <OPT>              Additional SSH options (repeatable)
-                               e.g. --ssh-opt "-p 2222"
+      --capture <CAPTURE>
+          Capture backend for the remote server
+
+          Possible values:
+          - auto:              Auto-detect on the server (ext-image-capture → wlr-screencopy → portal)
+          - wlr-screencopy:    wlr-screencopy-unstable-v1 (Hyprland, Sway, wlroots)
+          - ext-image-capture: ext-image-capture-source-v1 (modern Wayland protocol)
+          - portal:            xdg-desktop-portal Screencast over `PipeWire` via `GStreamer`. Server must be built with `--features portal`
+
+          [default: auto]
+
+      --compress <COMPRESS>
+          Preferred compression algorithm
+
+          Possible values:
+          - none: No compression — frames travel as raw bytes. Use on loopback or fast LAN where CPU spent on LZ4/zstd is the real bottleneck. Server must be started with `--compress none` too (matched out-of-band; there is no in-band negotiation of the codec)
+          - lz4:  Fast LZ4 block compression (default)
+          - zstd: Higher-ratio zstd compression
+
+          [default: lz4]
+
+      --no-interpolate
+          Disable frame interpolation
+
+      --debug
+          Show an FPS counter overlay in the top-left corner. Counts real frames received from the server (interpolated frames inherit the same number, since they're synthesized between reals)
+
+      --interpolation-backend <INTERPOLATION_BACKEND>
+          Interpolation backend to use (overrides auto-detection). Auto order: fsr3 → fsr2 → linear-blend. Available: fsr3, fsr2, fsr2-rife, linear-blend
+
+      --server-scale <SERVER_SCALE>
+          Server-side downscale factor forwarded to remoteway-server (0.1–1.0). 1.0 = native, 0.5 = half resolution before compression
+
+          [default: 1.0]
+
+      --upscale <UPSCALE>
+          Client-side upscale factor applied after receiving (1.0–2.0). 1.0 = display as-is, 2.0 = double the received frame size
+
+          [default: 1.0]
+
+      --app-id <APP_ID>
+          Capture a specific window by `app_id` on the remote side (e.g. "org.mozilla.firefox"). Forwarded to remoteway-server as --app-id
+
+      --capture-fps <CAPTURE_FPS>
+          Server-side capture FPS limit (10–500, default 100). Caps frame capture rate to prevent pipeline congestion
+
+          [default: 100]
+
+      --server-bin <SERVER_BIN>
+          Path to remoteway-server on remote host
+
+          [default: remoteway-server]
+
+      --ssh-opt <SSH_OPT>
+          Additional SSH options (e.g. "-p 2222")
+
+  -h, --help
+          Print help (see a summary with '-h')
 ```
 
 ### Examples

@@ -1,0 +1,22 @@
+[package]
+name = "remoteway-vulkan"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Shared Vulkan foundation: instance, device, queues, image/buffer helpers, video encode capability discovery"
+
+[dependencies]
+ash.workspace = true
+bitflags.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+bytemuck = { workspace = true, features = ["derive"] }
+
+[lints]
+workspace = true

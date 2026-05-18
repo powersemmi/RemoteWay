@@ -13,9 +13,9 @@ description = "FrameInterpolator trait + FSR/RIFE/NVIDIA OF backends"
 
 [features]
 default = []
-fsr2 = ["dep:ash", "dep:bytemuck", "dep:fsr", "dep:fsr-sys"]
-fsr2-native = ["dep:fsr", "dep:fsr-sys", "dep:ash", "dep:bytemuck"]
-fsr3 = ["dep:ash", "dep:bytemuck", "dep:libloading", "dep:half", "dep:fsr", "dep:fsr-sys"]
+fsr2 = ["dep:ash", "dep:bytemuck", "dep:fsr", "dep:fsr-sys", "dep:remoteway-vulkan"]
+fsr2-native = ["dep:fsr", "dep:fsr-sys", "dep:ash", "dep:bytemuck", "dep:remoteway-vulkan"]
+fsr3 = ["dep:ash", "dep:bytemuck", "dep:libloading", "dep:half", "dep:fsr", "dep:fsr-sys", "dep:remoteway-vulkan"]
 fsr2-rife = ["rife", "fsr2"]
 rife = []
 
@@ -25,12 +25,12 @@ tracing.workspace = true
 libloading = { version = "0.8", optional = true }
 
 # Optional GPU dependencies (feature-gated)
-wgpu = { workspace = true, optional = true }
 bytemuck = { workspace = true, optional = true, features = ["derive"] }
 ash = { workspace = true, optional = true }
 half = { version = "2", optional = true }
 fsr = { version = "0.1", optional = true, features = ["vulkan"] }
 fsr-sys = { version = "0.1", optional = true }
+remoteway-vulkan = { path = "../remoteway-vulkan", optional = true }
 
 [build-dependencies]
 cc = "1.0"

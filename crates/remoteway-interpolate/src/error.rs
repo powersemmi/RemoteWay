@@ -24,6 +24,20 @@ pub enum InterpolateError {
     InterpolateFailed(String),
 }
 
+#[cfg(any(feature = "fsr2", feature = "fsr3", feature = "fsr2-rife", feature = "fsr2-native"))]
+impl From<remoteway_vulkan::VulkanError> for InterpolateError {
+    fn from(e: remoteway_vulkan::VulkanError) -> Self {
+        use remoteway_vulkan::VulkanError as V;
+        match e {
+            V::LoaderFailed(s) | V::InitFailed(s) | V::NoSuitableQueue(s) => Self::InitFailed(s),
+            V::NoDevice => Self::InitFailed("no Vulkan device".into()),
+            V::MissingExtension(e) => Self::InitFailed(format!("missing extension: {e}")),
+            V::Allocation(s) => Self::InterpolateFailed(s),
+            V::Call { what, code } => Self::InterpolateFailed(format!("{what}: {code:?}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -426,6 +426,7 @@ impl Fsr2Interpolator {
             guard
                 .create_buffer(size, usage, device_local)
                 .or_else(|_| guard.create_buffer(size, usage, host_visible))
+                .map_err(Into::into)
         };
 
         let storage = vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST;
@@ -722,7 +723,9 @@ impl Fsr2Interpolator {
         guard.submit_and_wait(cmd)?;
 
         // Readback from dedicated readback buffer.
-        guard.read_from_buffer(res.readback_mem, frame_size as usize)
+        guard
+            .read_from_buffer(res.readback_mem, frame_size as usize)
+            .map_err(Into::into)
     }
 }
 
