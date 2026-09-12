@@ -157,8 +157,8 @@ impl Dispatch<zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1, ()> 
             zwlr_foreign_toplevel_handle_v1::Event::State { state: st } => {
                 if let Some(ref mut t) = state.current {
                     // State is a Vec<u8> of packed u32 enum values.
-                    for chunk in st.chunks_exact(4) {
-                        let val = u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    for chunk in st.as_chunks::<4>().0 {
+                        let val = u32::from_ne_bytes(*chunk);
                         match val {
                             // Activated = 0, Minimized = 1 in the protocol.
                             0 => t.activated = true,
