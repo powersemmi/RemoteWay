@@ -100,6 +100,8 @@ struct ExtCaptureState {
     session_ready: bool,
     // Per-frame state.
     frame_ready: bool,
+    /// wl_output.transform of the buffer contents relative to the source.
+    frame_transform: u32,
     frame_failed: bool,
     damage_rects: Vec<DamageRect>,
     timestamp_ns: u64,
@@ -113,7 +115,44 @@ struct DiscoveredToplevel {
     identifier: String,
 }
 
+/// Swaps rows top-to-bottom (vertical flip).
+fn flip_rows(data: &mut [u8], stride: usize) {
+    let height = data.len() / stride;
+    let mut top = 0;
+    let mut bottom = height.saturating_sub(1);
+    while top < bottom {
+        let (a, b) = data.split_at_mut(bottom * stride);
+        a[top * stride..(top + 1) * stride].swap_with_slice(&mut b[..stride]);
+        top += 1;
+        bottom -= 1;
+    }
+}
+
+/// Reverses the 4-byte pixels within each row (horizontal mirror).
+fn mirror_rows(data: &mut [u8], stride: usize) {
+    let pixels = stride / 4;
+    for row in data.chunks_exact_mut(stride) {
+        for i in 0..pixels / 2 {
+            let (l, r) = (i * 4, (pixels - 1 - i) * 4);
+            for k in 0..4 {
+                row.swap(l + k, r + k);
+            }
+        }
+    }
+}
+
 impl ExtImageCaptureBackend {
+    /// Replaces the reported damage with the full frame.
+    fn full_damage(&mut self) {
+        self.state.damage_rects.clear();
+        self.state.damage_rects.push(DamageRect::new(
+            0,
+            0,
+            self.state.buffer_width,
+            self.state.buffer_height,
+        ));
+    }
+
     /// Create a new ext-image-capture backend.
     ///
     /// Returns `Err(NoBackend)` if the compositor doesn't support the protocol.
@@ -139,6 +178,7 @@ impl ExtImageCaptureBackend {
             shm_format: None,
             session_ready: false,
             frame_ready: false,
+            frame_transform: 0,
             frame_failed: false,
             damage_rects: Vec::new(),
             timestamp_ns: 0,
@@ -286,9 +326,10 @@ impl ExtImageCaptureBackend {
         let source = state.source.as_ref().ok_or(CaptureError::CaptureFailed(
             "BUG: source not initialized".into(),
         ))?;
+        // Ask the compositor to composite the cursor into the frames.
         let session = capture_manager.create_session(
             source,
-            ext_image_copy_capture_manager_v1::Options::empty(),
+            ext_image_copy_capture_manager_v1::Options::PaintCursors,
             &qh,
             (),
         );
@@ -381,9 +422,10 @@ impl CaptureBackend for ExtImageCaptureBackend {
         // Trigger capture.
         frame.capture();
 
-        // Dispatch until ready or failed, but bounded so we don't hang
-        // forever if the compositor silently drops the frame event.
-        // 1s is generous for a single frame at any reasonable framerate.
+        // Dispatch until ready or failed. Damage-driven compositors (niri,
+        // wlroots) complete a capture only when the content actually changes,
+        // so a quiet screen legitimately produces no frame for an unbounded
+        // amount of time; a timeout here is "no changes yet", not an error.
         let frame_timeout = std::time::Duration::from_secs(1);
         while !self.state.frame_ready && !self.state.frame_failed && !self.state.stopped {
             match crate::wayland_io::dispatch_with_deadline(
@@ -393,12 +435,7 @@ impl CaptureBackend for ExtImageCaptureBackend {
                 frame_timeout,
             )? {
                 crate::wayland_io::DispatchOutcome::Dispatched => {}
-                crate::wayland_io::DispatchOutcome::TimedOut => {
-                    frame.destroy();
-                    return Err(CaptureError::CaptureFailed(
-                        "frame timeout: compositor did not produce a frame within 1s".into(),
-                    ));
-                }
+                crate::wayland_io::DispatchOutcome::TimedOut => continue,
             }
         }
 
@@ -433,7 +470,7 @@ impl CaptureBackend for ExtImageCaptureBackend {
 
         // SAFETY: frame_ready == true means the compositor has finished writing.
         #[allow(clippy::expect_used)]
-        let data = unsafe {
+        let mut data = unsafe {
             self.state
                 .shm_pool
                 .as_ref()
@@ -441,6 +478,34 @@ impl CaptureBackend for ExtImageCaptureBackend {
                 .active_data()
                 .to_vec()
         };
+
+        // The buffer contents are transformed relative to the source (e.g. niri's winit
+        // backend uses flipped-180); undo the transform so the pipeline gets upright
+        // pixels. Damage rects are in transformed buffer coordinates, so just treat the
+        // whole frame as damaged in that case.
+        match self.state.frame_transform {
+            0 => {}
+            2 => {
+                flip_rows(&mut data, stride as usize);
+                mirror_rows(&mut data, stride as usize);
+                self.full_damage();
+            }
+            4 => {
+                mirror_rows(&mut data, stride as usize);
+                self.full_damage();
+            }
+            6 => {
+                flip_rows(&mut data, stride as usize);
+                self.full_damage();
+            }
+            other => {
+                tracing::warn!(
+                    transform = other,
+                    "unsupported buffer transform, image may be rotated"
+                );
+                self.full_damage();
+            }
+        }
 
         // Swap double buffer.
         if let Some(ref mut pool) = self.state.shm_pool {
@@ -702,6 +767,12 @@ impl Dispatch<ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1, ()> f
                 state.timestamp_ns =
                     ((tv_sec_hi as u64) << 32 | tv_sec_lo as u64) * 1_000_000_000 + tv_nsec as u64;
             }
+            ext_image_copy_capture_frame_v1::Event::Transform { transform } => {
+                state.frame_transform = match transform {
+                    wayland_client::WEnum::Value(t) => t as u32,
+                    wayland_client::WEnum::Unknown(v) => v,
+                };
+            }
             ext_image_copy_capture_frame_v1::Event::Ready => {
                 state.frame_ready = true;
             }
@@ -796,6 +867,7 @@ pub fn enumerate_toplevels() -> Result<Vec<ToplevelInfo>, CaptureError> {
         shm_format: None,
         session_ready: false,
         frame_ready: false,
+        frame_transform: 0,
         frame_failed: false,
         damage_rects: Vec::new(),
         timestamp_ns: 0,
