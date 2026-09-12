@@ -19,16 +19,16 @@
 #![allow(clippy::cast_lossless)]
 #![allow(non_upper_case_globals)]
 
-use std::ffi::{c_char, CStr};
+use std::ffi::{CStr, c_char};
 use std::sync::Arc;
 
 use ash::vk;
-use ash::vk::native as vkn;
 use ash::vk::TaggedStructure;
+use ash::vk::native as vkn;
 use remoteway_vulkan::{VideoCodec, VulkanContext};
 
-use crate::encoder::{EncodeParams, EncodedFrame, Encoder, FrameKind, InputFrame, RateControl};
 use crate::EncodeError;
+use crate::encoder::{EncodeParams, EncodedFrame, Encoder, FrameKind, InputFrame, RateControl};
 
 const SPS_ID: u8 = 0;
 const PPS_ID: u8 = 0;
@@ -78,7 +78,7 @@ pub struct H264Encoder {
     out_buffer: vk::Buffer,
     out_buffer_memory: vk::DeviceMemory,
 
-    /// Two u32 result components per query: BUFFER_OFFSET + BYTES_WRITTEN.
+    /// Two u32 result components per query: `BUFFER_OFFSET` + `BYTES_WRITTEN`.
     query_pool: vk::QueryPool,
 
     encode_cmd_pool: vk::CommandPool,
@@ -123,11 +123,10 @@ impl ProfileChain {
                 .luma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
                 .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8),
         );
-        profile.p_next = &*h264 as *const vk::VideoEncodeH264ProfileInfoKHR<'_>
-            as *const std::ffi::c_void;
+        profile.p_next =
+            &*h264 as *const vk::VideoEncodeH264ProfileInfoKHR<'_> as *const std::ffi::c_void;
 
-        let mut profile_list: Box<vk::VideoProfileListInfoKHR<'static>> =
-            Box::new(vk::VideoProfileListInfoKHR::default());
+        let mut profile_list: Box<vk::VideoProfileListInfoKHR<'static>> = Box::default();
         profile_list.profile_count = 1;
         profile_list.p_profiles = &*profile;
 
@@ -154,9 +153,9 @@ impl Encoder for H264Encoder {
         let caps = ctx.probe_video_encode_capabilities(VideoCodec::H264)?;
         params.validate_against(&caps)?;
 
-        let encode_queue_family = ctx
-            .video_encode_queue_family
-            .ok_or_else(|| EncodeError::InvalidParams("context has no encode queue family".into()))?;
+        let encode_queue_family = ctx.video_encode_queue_family.ok_or_else(|| {
+            EncodeError::InvalidParams("context has no encode queue family".into())
+        })?;
         let encode_queue = ctx.video_encode_queue.ok_or_else(|| {
             EncodeError::InvalidParams("context has no encode queue handle".into())
         })?;
@@ -186,9 +185,8 @@ impl Encoder for H264Encoder {
             .max_dpb_slots(DPB_SLOTS)
             .max_active_reference_pictures(1)
             .std_header_version(&std_header);
-        let session = unsafe { video_queue.create_video_session(&session_info, None) }.map_err(
-            |e| EncodeError::SubmitFailed(format!("create_video_session: {e:?}")),
-        )?;
+        let session = unsafe { video_queue.create_video_session(&session_info, None) }
+            .map_err(|e| EncodeError::SubmitFailed(format!("create_video_session: {e:?}")))?;
 
         // -- Bind session memory --
         let session_memory = bind_session_memory(&ctx, &video_queue, session)?;
@@ -210,14 +208,15 @@ impl Encoder for H264Encoder {
             .video_session(session)
             .push(&mut h264_params_info);
 
-        let session_params = unsafe {
-            video_queue.create_video_session_parameters(&session_params_info, None)
-        }
-        .map_err(|e| EncodeError::SubmitFailed(format!("create_video_session_parameters: {e:?}")))?;
+        let session_params =
+            unsafe { video_queue.create_video_session_parameters(&session_params_info, None) }
+                .map_err(|e| {
+                    EncodeError::SubmitFailed(format!("create_video_session_parameters: {e:?}"))
+                })?;
 
         // -- Pull Annex-B blob for SPS/PPS --
-        let parameter_sets_blob =
-            fetch_parameter_sets_blob(&video_encode, session_params).map_err(|e| {
+        let parameter_sets_blob = fetch_parameter_sets_blob(&video_encode, session_params)
+            .map_err(|e| {
                 EncodeError::ReadbackFailed(format!("get_encoded_video_session_parameters: {e:?}"))
             })?;
         // -- DPB pool --
@@ -373,8 +372,9 @@ impl Encoder for H264Encoder {
         let ref_lists = vkn::StdVideoEncodeH264ReferenceListsInfo {
             flags: vkn::StdVideoEncodeH264ReferenceListsInfoFlags {
                 _bitfield_align_1: [],
-                _bitfield_1:
-                    vkn::StdVideoEncodeH264ReferenceListsInfoFlags::new_bitfield_1(0, 0, 0),
+                _bitfield_1: vkn::StdVideoEncodeH264ReferenceListsInfoFlags::new_bitfield_1(
+                    0, 0, 0,
+                ),
             },
             num_ref_idx_l0_active_minus1: 0,
             num_ref_idx_l1_active_minus1: 0,
@@ -434,8 +434,7 @@ impl Encoder for H264Encoder {
         let setup_std_ref = vkn::StdVideoEncodeH264ReferenceInfo {
             flags: vkn::StdVideoEncodeH264ReferenceInfoFlags {
                 _bitfield_align_1: [],
-                _bitfield_1:
-                    vkn::StdVideoEncodeH264ReferenceInfoFlags::new_bitfield_1(0, 0),
+                _bitfield_1: vkn::StdVideoEncodeH264ReferenceInfoFlags::new_bitfield_1(0, 0),
             },
             primary_pic_type,
             FrameNum: frame_num,
@@ -444,8 +443,8 @@ impl Encoder for H264Encoder {
             long_term_frame_idx: 0,
             temporal_id: 0,
         };
-        let setup_h264 = vk::VideoEncodeH264DpbSlotInfoKHR::default()
-            .std_reference_info(&setup_std_ref);
+        let setup_h264 =
+            vk::VideoEncodeH264DpbSlotInfoKHR::default().std_reference_info(&setup_std_ref);
 
         let setup_pic_resource = vk::VideoPictureResourceInfoKHR::default()
             .coded_offset(vk::Offset2D { x: 0, y: 0 })
@@ -474,8 +473,7 @@ impl Encoder for H264Encoder {
             ref_std_ref = vkn::StdVideoEncodeH264ReferenceInfo {
                 flags: vkn::StdVideoEncodeH264ReferenceInfoFlags {
                     _bitfield_align_1: [],
-                    _bitfield_1:
-                        vkn::StdVideoEncodeH264ReferenceInfoFlags::new_bitfield_1(0, 0),
+                    _bitfield_1: vkn::StdVideoEncodeH264ReferenceInfoFlags::new_bitfield_1(0, 0),
                 },
                 primary_pic_type: vkn::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_P,
                 FrameNum: ((self.frame_index as u32).wrapping_sub(1)) & 0xF,
@@ -484,8 +482,8 @@ impl Encoder for H264Encoder {
                 long_term_frame_idx: 0,
                 temporal_id: 0,
             };
-            ref_h264 = vk::VideoEncodeH264DpbSlotInfoKHR::default()
-                .std_reference_info(&ref_std_ref);
+            ref_h264 =
+                vk::VideoEncodeH264DpbSlotInfoKHR::default().std_reference_info(&ref_std_ref);
             ref_h264_slot = ref_h264;
             ref_pic_resource = vk::VideoPictureResourceInfoKHR::default()
                 .coded_offset(vk::Offset2D { x: 0, y: 0 })
@@ -502,7 +500,6 @@ impl Encoder for H264Encoder {
                     .push(&mut ref_h264_slot),
             );
         } else {
-            ref_std_ref = unsafe { std::mem::zeroed() };
             ref_h264 = vk::VideoEncodeH264DpbSlotInfoKHR::default();
             ref_h264_slot = ref_h264;
             ref_pic_resource = vk::VideoPictureResourceInfoKHR::default();
@@ -535,8 +532,8 @@ impl Encoder for H264Encoder {
             long_term_frame_idx: 0,
             temporal_id: 0,
         };
-        let mut begin_setup_h264 = vk::VideoEncodeH264DpbSlotInfoKHR::default()
-            .std_reference_info(&begin_setup_std_ref);
+        let mut begin_setup_h264 =
+            vk::VideoEncodeH264DpbSlotInfoKHR::default().std_reference_info(&begin_setup_std_ref);
         // Setup slot in BeginCoding uses slot_index = -1 because the slot
         // becomes active only after the encode op writes to it.
         let setup_in_begin = vk::VideoReferenceSlotInfoKHR::default()
@@ -608,7 +605,12 @@ impl Encoder for H264Encoder {
         let input_view = if let Some(v) = self.input_views.get(&frame.image) {
             *v
         } else {
-            let v = create_image_view(&self.ctx, frame.image, INPUT_FORMAT, vk::ImageAspectFlags::COLOR)?;
+            let v = create_image_view(
+                &self.ctx,
+                frame.image,
+                INPUT_FORMAT,
+                vk::ImageAspectFlags::COLOR,
+            )?;
             self.input_views.insert(frame.image, v);
             v
         };
@@ -636,7 +638,8 @@ impl Encoder for H264Encoder {
                 .slot_index(prev as i32)
                 .picture_resource(&ref_pic_resource)
                 .push(&mut ref_h264_slot);
-            encode_info = encode_info.reference_slots(std::slice::from_ref(&ref_for_encode_storage));
+            encode_info =
+                encode_info.reference_slots(std::slice::from_ref(&ref_for_encode_storage));
         }
 
         unsafe {
@@ -664,8 +667,8 @@ impl Encoder for H264Encoder {
                 .device
                 .reset_fences(std::slice::from_ref(&self.encode_fence))
                 .map_err(|e| EncodeError::SubmitFailed(format!("reset_fences: {e:?}")))?;
-            let submit = vk::SubmitInfo::default()
-                .command_buffers(std::slice::from_ref(&self.encode_cmd));
+            let submit =
+                vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&self.encode_cmd));
             self.ctx
                 .device
                 .queue_submit(self.encode_queue, &[submit], self.encode_fence)
@@ -690,7 +693,9 @@ impl Encoder for H264Encoder {
                     &mut feedback,
                     vk::QueryResultFlags::WAIT,
                 )
-                .map_err(|e| EncodeError::ReadbackFailed(format!("get_query_pool_results: {e:?}")))?;
+                .map_err(|e| {
+                    EncodeError::ReadbackFailed(format!("get_query_pool_results: {e:?}"))
+                })?;
         }
         let _buffer_offset = feedback[0][0] as u64;
         let bytes_written = feedback[0][1] as u64;
@@ -771,9 +776,7 @@ impl Drop for H264Encoder {
                 .destroy_command_pool(self.encode_cmd_pool, None);
             self.ctx.device.destroy_query_pool(self.query_pool, None);
             self.ctx.device.destroy_buffer(self.out_buffer, None);
-            self.ctx
-                .device
-                .free_memory(self.out_buffer_memory, None);
+            self.ctx.device.free_memory(self.out_buffer_memory, None);
             for slot in self.dpb.drain(..) {
                 self.ctx.device.destroy_image_view(slot.view, None);
                 self.ctx.device.destroy_image(slot.image, None);
@@ -956,9 +959,7 @@ fn bind_session_memory(
     unsafe {
         video_queue
             .bind_video_session_memory(session, &binds)
-            .map_err(|e| {
-                EncodeError::SubmitFailed(format!("bind_video_session_memory: {e:?}"))
-            })?;
+            .map_err(|e| EncodeError::SubmitFailed(format!("bind_video_session_memory: {e:?}")))?;
     }
 
     Ok(allocations)
@@ -978,8 +979,8 @@ fn fetch_parameter_sets_blob(
         .push(&mut h264_get);
 
     let mut feedback_h264 = vk::VideoEncodeH264SessionParametersFeedbackInfoKHR::default();
-    let mut feedback = vk::VideoEncodeSessionParametersFeedbackInfoKHR::default()
-        .push(&mut feedback_h264);
+    let mut feedback =
+        vk::VideoEncodeSessionParametersFeedbackInfoKHR::default().push(&mut feedback_h264);
 
     let len = unsafe {
         video_encode.get_encoded_video_session_parameters_len(&get_info, Some(&mut feedback))?

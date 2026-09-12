@@ -100,7 +100,7 @@ struct ExtCaptureState {
     session_ready: bool,
     // Per-frame state.
     frame_ready: bool,
-    /// wl_output.transform of the buffer contents relative to the source.
+    /// `wl_output.transform` of the buffer contents relative to the source.
     frame_transform: u32,
     frame_failed: bool,
     damage_rects: Vec<DamageRect>,
@@ -769,8 +769,8 @@ impl Dispatch<ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1, ()> f
             }
             ext_image_copy_capture_frame_v1::Event::Transform { transform } => {
                 state.frame_transform = match transform {
-                    wayland_client::WEnum::Value(t) => t as u32,
-                    wayland_client::WEnum::Unknown(v) => v,
+                    WEnum::Value(t) => t as u32,
+                    WEnum::Unknown(v) => v,
                 };
             }
             ext_image_copy_capture_frame_v1::Event::Ready => {
@@ -779,7 +779,6 @@ impl Dispatch<ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1, ()> f
             ext_image_copy_capture_frame_v1::Event::Failed { .. } => {
                 state.frame_failed = true;
             }
-            _ => {}
         }
     }
 }

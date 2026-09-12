@@ -179,7 +179,7 @@ impl CursorOverlay {
 
         let fd = nix::sys::memfd::memfd_create(
             c"remoteway-cursor",
-            nix::sys::memfd::MemFdCreateFlag::MFD_CLOEXEC,
+            nix::sys::memfd::MFdFlags::MFD_CLOEXEC,
         )
         .map_err(|e| DisplayError::ShmBuffer(format!("cursor memfd_create failed: {e}")))?;
 

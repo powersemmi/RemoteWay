@@ -152,11 +152,9 @@ impl ShmSlot {
     where
         D: Dispatch<wl_shm_pool::WlShmPool, ()> + Dispatch<wl_buffer::WlBuffer, usize> + 'static,
     {
-        let fd = nix::sys::memfd::memfd_create(
-            c"remoteway-shm",
-            nix::sys::memfd::MemFdCreateFlag::MFD_CLOEXEC,
-        )
-        .map_err(|e| CaptureError::ShmPool(format!("memfd_create failed: {e}")))?;
+        let fd =
+            nix::sys::memfd::memfd_create(c"remoteway-shm", nix::sys::memfd::MFdFlags::MFD_CLOEXEC)
+                .map_err(|e| CaptureError::ShmPool(format!("memfd_create failed: {e}")))?;
 
         nix::unistd::ftruncate(&fd, size as i64)
             .map_err(|e| CaptureError::ShmPool(format!("ftruncate failed: {e}")))?;

@@ -81,13 +81,13 @@ impl EncodeParams {
         // Picture access granularity defines the multiple width/height must be aligned to
         // on the encoder side. We don't pad implicitly — caller must respect it.
         let (gx, gy) = caps.picture_access_granularity;
-        if gx > 0 && self.width % gx != 0 {
+        if gx > 0 && !self.width.is_multiple_of(gx) {
             return Err(EncodeError::InvalidParams(format!(
                 "width {} not aligned to picture_access_granularity {}",
                 self.width, gx
             )));
         }
-        if gy > 0 && self.height % gy != 0 {
+        if gy > 0 && !self.height.is_multiple_of(gy) {
             return Err(EncodeError::InvalidParams(format!(
                 "height {} not aligned to picture_access_granularity {}",
                 self.height, gy
@@ -102,7 +102,8 @@ impl EncodeParams {
         }
         if self.intra_refresh_period.is_some() && !caps.supports_intra_refresh {
             return Err(EncodeError::InvalidParams(
-                "intra_refresh_period set but device lacks VK_KHR_video_encode_intra_refresh".into(),
+                "intra_refresh_period set but device lacks VK_KHR_video_encode_intra_refresh"
+                    .into(),
             ));
         }
         if let RateControl::ConstantQp { qp } = self.rate_control {
@@ -136,10 +137,7 @@ pub enum RateControl {
     /// window defined by HRD parameters.
     Cbr { bitrate_bps: u64 },
     /// Variable bitrate with a peak ceiling. Average target plus peak cap.
-    Vbr {
-        average_bps: u64,
-        peak_bps: u64,
-    },
+    Vbr { average_bps: u64, peak_bps: u64 },
 }
 
 impl RateControl {
@@ -188,11 +186,11 @@ pub struct EncodedFrame {
 /// A GPU-resident input frame in YUV format, owned by the caller.
 ///
 /// Backends do not assume ownership — they record an encode command, submit
-/// it, and wait. The caller is responsible for keeping the underlying VkImage
+/// it, and wait. The caller is responsible for keeping the underlying `VkImage`
 /// alive until `encode` returns.
 #[derive(Debug, Clone, Copy)]
 pub struct InputFrame {
-    pub image: ash::vk::Image,
+    pub image: vk::Image,
     pub width: u32,
     pub height: u32,
     /// Caller-supplied PTS (90 kHz ticks). Echoed back in [`EncodedFrame::pts_90khz`].
@@ -212,18 +210,18 @@ pub trait Encoder: Send {
     fn new(
         ctx: std::sync::Arc<remoteway_vulkan::VulkanContext>,
         params: EncodeParams,
-    ) -> Result<Self, crate::EncodeError>
+    ) -> Result<Self, EncodeError>
     where
         Self: Sized;
 
     /// The Vulkan image format this encoder consumes. Caller must ensure
     /// `InputFrame::image` is in this format and in
     /// `VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR` layout.
-    fn accepted_input_format(&self) -> ash::vk::Format;
+    fn accepted_input_format(&self) -> vk::Format;
 
     /// Encodes one frame and returns the Annex-B / OBU-stream payload.
     /// Blocks until the GPU has produced the bitstream.
-    fn encode(&mut self, frame: InputFrame) -> Result<EncodedFrame, crate::EncodeError>;
+    fn encode(&mut self, frame: InputFrame) -> Result<EncodedFrame, EncodeError>;
 
     /// Forces the next encoded frame to be an IDR / keyframe, regardless of
     /// the configured intra-refresh schedule. Used by transport on packet
@@ -280,8 +278,15 @@ mod tests {
 
     #[test]
     fn rate_control_cbr_and_vbr_map_distinctly() {
-        let cbr = RateControl::Cbr { bitrate_bps: 5_000_000 }.to_vk_mode();
-        let vbr = RateControl::Vbr { average_bps: 5_000_000, peak_bps: 10_000_000 }.to_vk_mode();
+        let cbr = RateControl::Cbr {
+            bitrate_bps: 5_000_000,
+        }
+        .to_vk_mode();
+        let vbr = RateControl::Vbr {
+            average_bps: 5_000_000,
+            peak_bps: 10_000_000,
+        }
+        .to_vk_mode();
         assert_ne!(cbr, vbr);
     }
 
@@ -305,7 +310,10 @@ mod tests {
         let caps = caps_fixture(VideoCodec::H265);
         let mut params = params_fixture(VideoCodec::H265);
         params.width = 0;
-        assert!(matches!(params.validate_against(&caps), Err(EncodeError::InvalidParams(_))));
+        assert!(matches!(
+            params.validate_against(&caps),
+            Err(EncodeError::InvalidParams(_))
+        ));
     }
 
     #[test]
@@ -314,7 +322,10 @@ mod tests {
         let mut params = params_fixture(VideoCodec::H265);
         params.width = 7680;
         params.height = 4320;
-        assert!(matches!(params.validate_against(&caps), Err(EncodeError::InvalidParams(_))));
+        assert!(matches!(
+            params.validate_against(&caps),
+            Err(EncodeError::InvalidParams(_))
+        ));
     }
 
     #[test]
@@ -322,7 +333,10 @@ mod tests {
         let caps = caps_fixture(VideoCodec::H265);
         let mut params = params_fixture(VideoCodec::H265);
         params.width = 1281;
-        assert!(matches!(params.validate_against(&caps), Err(EncodeError::InvalidParams(_))));
+        assert!(matches!(
+            params.validate_against(&caps),
+            Err(EncodeError::InvalidParams(_))
+        ));
     }
 
     #[test]
@@ -331,8 +345,13 @@ mod tests {
         // Device only supports DISABLED (CQP). Asking for CBR must fail.
         caps.rate_control_modes = vk::VideoEncodeRateControlModeFlagsKHR::DISABLED;
         let mut params = params_fixture(VideoCodec::H265);
-        params.rate_control = RateControl::Cbr { bitrate_bps: 5_000_000 };
-        assert!(matches!(params.validate_against(&caps), Err(EncodeError::InvalidParams(_))));
+        params.rate_control = RateControl::Cbr {
+            bitrate_bps: 5_000_000,
+        };
+        assert!(matches!(
+            params.validate_against(&caps),
+            Err(EncodeError::InvalidParams(_))
+        ));
     }
 
     #[test]
@@ -341,7 +360,10 @@ mod tests {
         caps.supports_intra_refresh = false;
         let mut params = params_fixture(VideoCodec::H265);
         params.intra_refresh_period = Some(30);
-        assert!(matches!(params.validate_against(&caps), Err(EncodeError::InvalidParams(_))));
+        assert!(matches!(
+            params.validate_against(&caps),
+            Err(EncodeError::InvalidParams(_))
+        ));
     }
 
     #[test]
@@ -349,6 +371,9 @@ mod tests {
         let caps = caps_fixture(VideoCodec::H265);
         let mut params = params_fixture(VideoCodec::H265);
         params.frame_rate = (60, 0);
-        assert!(matches!(params.validate_against(&caps), Err(EncodeError::InvalidParams(_))));
+        assert!(matches!(
+            params.validate_against(&caps),
+            Err(EncodeError::InvalidParams(_))
+        ));
     }
 }

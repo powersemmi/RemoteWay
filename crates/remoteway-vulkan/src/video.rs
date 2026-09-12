@@ -15,6 +15,7 @@ pub enum VideoCodec {
 
 impl VideoCodec {
     /// Extension name string corresponding to this codec's encode extension.
+    #[must_use]
     pub const fn encode_extension(self) -> &'static std::ffi::CStr {
         match self {
             Self::H264 => c"VK_KHR_video_encode_h264",
