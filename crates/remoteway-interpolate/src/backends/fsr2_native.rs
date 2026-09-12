@@ -513,24 +513,16 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
 
             let src_size = (src_w * src_h * 4) as u64;
             let mv_size = (src_w * src_h * 4) as u64;
-            let (scb, scm) = vk_ctx.create_host_buffer(
-                src_size,
-                vk::BufferUsageFlags::TRANSFER_SRC,
-            )?;
-            let (sdb, sdm) = vk_ctx.create_host_buffer(
-                src_size,
-                vk::BufferUsageFlags::TRANSFER_SRC,
-            )?;
-            let (smb, smm) = vk_ctx.create_host_buffer(
-                mv_size,
-                vk::BufferUsageFlags::TRANSFER_SRC,
-            )?;
+            let (scb, scm) =
+                vk_ctx.create_host_buffer(src_size, vk::BufferUsageFlags::TRANSFER_SRC)?;
+            let (sdb, sdm) =
+                vk_ctx.create_host_buffer(src_size, vk::BufferUsageFlags::TRANSFER_SRC)?;
+            let (smb, smm) =
+                vk_ctx.create_host_buffer(mv_size, vk::BufferUsageFlags::TRANSFER_SRC)?;
 
             let dst_size = (dst_w * dst_h * 4) as u64;
-            let (rb, rm) = vk_ctx.create_host_buffer(
-                dst_size,
-                vk::BufferUsageFlags::TRANSFER_DST,
-            )?;
+            let (rb, rm) =
+                vk_ctx.create_host_buffer(dst_size, vk::BufferUsageFlags::TRANSFER_DST)?;
 
             let cmd = vk_ctx.allocate_command_buffer()?;
 
@@ -592,10 +584,9 @@ impl FrameInterpolator for Fsr2NativeInterpolator {
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 );
-                vk_ctx
-                    .device
-                    .end_command_buffer(init_cmd)
-                    .map_err(|e| InterpolateError::InterpolateFailed(format!("end init cmd: {e}")))?;
+                vk_ctx.device.end_command_buffer(init_cmd).map_err(|e| {
+                    InterpolateError::InterpolateFailed(format!("end init cmd: {e}"))
+                })?;
             }
             vk_ctx.submit_and_wait(init_cmd)?;
             unsafe {

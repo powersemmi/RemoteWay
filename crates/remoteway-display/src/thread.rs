@@ -514,10 +514,10 @@ mod tests {
         assert!(stop_flag.load(Ordering::Acquire));
     }
 
-    /// The idle sleep constant should be 500 microseconds.
+    /// The idle sleep constant should match the value used by the display thread.
     #[test]
     fn idle_sleep_value() {
-        assert_eq!(IDLE_SLEEP, std::time::Duration::from_micros(500));
+        assert_eq!(IDLE_SLEEP, std::time::Duration::from_millis(10));
     }
 
     /// Multiple surfaces can have frames in the same ring.

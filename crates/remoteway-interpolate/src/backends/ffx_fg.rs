@@ -344,33 +344,46 @@ type FnFrameInterpolationDispatch = unsafe extern "C" fn(
 type FnGetScratchMemorySizeVK =
     unsafe extern "C" fn(physical_device: vk::PhysicalDevice, max_contexts: u32) -> usize;
 
-
 // ---------------------------------------------------------------------------
 // FFI declarations – statically linked by build.rs
 // ---------------------------------------------------------------------------
 
 pub unsafe fn ffxGetScratchMemorySizeVK(
-    physical_device: ash::vk::PhysicalDevice, max_contexts: u32,
+    physical_device: ash::vk::PhysicalDevice,
+    max_contexts: u32,
 ) -> usize {
     unsafe extern "C" {
         fn ffxGetScratchMemorySizeVK(
-            physical_device: ash::vk::PhysicalDevice, max_contexts: u32,
+            physical_device: ash::vk::PhysicalDevice,
+            max_contexts: u32,
         ) -> usize;
     }
     ffxGetScratchMemorySizeVK(physical_device, max_contexts)
 }
 
 pub unsafe fn ffxGetInterfaceVK(
-    out_interface: *mut FfxInterface, device: FfxDevice,
-    scratch_buffer: *mut std::ffi::c_void, scratch_buffer_size: usize, max_contexts: u32,
+    out_interface: *mut FfxInterface,
+    device: FfxDevice,
+    scratch_buffer: *mut std::ffi::c_void,
+    scratch_buffer_size: usize,
+    max_contexts: u32,
 ) -> FfxErrorCode {
     unsafe extern "C" {
         fn ffxGetInterfaceVK(
-            out_interface: *mut FfxInterface, device: FfxDevice,
-            scratch_buffer: *mut std::ffi::c_void, scratch_buffer_size: usize, max_contexts: u32,
+            out_interface: *mut FfxInterface,
+            device: FfxDevice,
+            scratch_buffer: *mut std::ffi::c_void,
+            scratch_buffer_size: usize,
+            max_contexts: u32,
         ) -> FfxErrorCode;
     }
-    ffxGetInterfaceVK(out_interface, device, scratch_buffer, scratch_buffer_size, max_contexts)
+    ffxGetInterfaceVK(
+        out_interface,
+        device,
+        scratch_buffer,
+        scratch_buffer_size,
+        max_contexts,
+    )
 }
 
 pub unsafe fn ffxFrameInterpolationContextCreate(

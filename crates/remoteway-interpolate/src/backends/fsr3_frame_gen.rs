@@ -30,11 +30,7 @@
 //! export FIDELITYFX_LIB_PATH=$PWD/build/bin/libFidelityFX.so
 //! ```
 #![allow(clippy::undocumented_unsafe_blocks)]
-use std::sync::{Arc, Mutex};
-use ash::vk;
-use ash::vk::Handle;
-use crate::error::InterpolateError;
-use crate::interpolator::{FrameInterpolator, GpuFrame};
+use super::ffx_fg::*;
 use super::ffx_fg::{
     FFX_BACKBUFFER_TRANSFER_FUNCTION_SRGB, FFX_FRAMEINTERPOLATION_DISPATCH_DRAW_DEBUG_TEAR_LINES,
     FFX_FRAMEINTERPOLATION_ENABLE_DEPTH_INFINITE, FFX_FRAMEINTERPOLATION_ENABLE_DEPTH_INVERTED,
@@ -49,8 +45,12 @@ use super::ffx_fg::{
     FfxFrameInterpolationSharedResourceDescriptions, FfxInterface, FfxRect2D, FfxResource,
     FfxResourceDescription, FfxResourceState, FfxSurfaceFormat,
 };
-use super::ffx_fg::*;
 use super::vulkan_context::VulkanContext;
+use crate::error::InterpolateError;
+use crate::interpolator::{FrameInterpolator, GpuFrame};
+use ash::vk;
+use ash::vk::Handle;
+use std::sync::{Arc, Mutex};
 // ---------------------------------------------------------------------------
 // Helpers — Vulkan image creation
 // ---------------------------------------------------------------------------
@@ -228,7 +228,6 @@ impl Fsr3FrameGen {
         display_w: u32,
         display_h: u32,
     ) -> Result<Self, InterpolateError> {
-        
         // 2. Create Vulkan context.
         let vk = Arc::new(Mutex::new(VulkanContext::new(&[])?));
         let guard = vk
@@ -238,8 +237,7 @@ impl Fsr3FrameGen {
         let physical_device = guard.physical_device;
         // 3. Get Vulkan backend interface.
         let max_contexts = 1u32;
-        let scratch_size =
-            unsafe { ffxGetScratchMemorySizeVK(physical_device, max_contexts) };
+        let scratch_size = unsafe { ffxGetScratchMemorySizeVK(physical_device, max_contexts) };
         let mut scratch = vec![0u8; scratch_size];
         let mut backend_interface = FfxInterface::default();
         let vk_ctx = VkDeviceContext {
@@ -297,7 +295,9 @@ impl Fsr3FrameGen {
             dilated_motion_vectors: FfxResourceDescription::default(),
             reconstructed_prev_nearest_depth: FfxResourceDescription::default(),
         };
-        let err = unsafe { ffxFrameInterpolationGetSharedResourceDescriptions(&fg_ctx, &mut shared_desc) };
+        let err = unsafe {
+            ffxFrameInterpolationGetSharedResourceDescriptions(&fg_ctx, &mut shared_desc)
+        };
         if err != FFX_OK {
             unsafe { ffxFrameInterpolationContextDestroy(&mut fg_ctx) };
             return Err(InterpolateError::InitFailed(format!(
@@ -443,7 +443,11 @@ impl Fsr3FrameGen {
     /// The interpolation happens at the temporal midpoint (t=0.5).
     /// Frame `b` is the "current back buffer" for the FG dispatch.
     /// Frame `a` provides the optical flow source.
-    pub fn generate_frame(&mut self, a: &GpuFrame, b: &GpuFrame) -> Result<GpuFrame, InterpolateError> {
+    pub fn generate_frame(
+        &mut self,
+        a: &GpuFrame,
+        b: &GpuFrame,
+    ) -> Result<GpuFrame, InterpolateError> {
         if !a.same_dimensions(b) {
             return Err(InterpolateError::DimensionMismatch(
                 a.width, a.height, b.width, b.height,

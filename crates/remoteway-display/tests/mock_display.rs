@@ -1357,7 +1357,9 @@ fn wayland_display_update_surface_metadata_not_found() {
 fn wayland_display_destroy_surface() {
     let _mock = ListeningDisplayMock::new();
     let mut display = remoteway_display::WaylandDisplay::new().unwrap();
-    display.create_surface(2, "Tmp", "tmp.app", 64, 64, 1.0).unwrap();
+    display
+        .create_surface(2, "Tmp", "tmp.app", 64, 64, 1.0)
+        .unwrap();
     assert!(display.get_surface(2).is_some());
 
     display.destroy_surface(2);
@@ -1376,7 +1378,9 @@ fn wayland_display_destroy_nonexistent_surface_is_noop() {
 fn wayland_display_resize_surface() {
     let _mock = ListeningDisplayMock::new();
     let mut display = remoteway_display::WaylandDisplay::new().unwrap();
-    display.create_surface(3, "R", "r.app", 100, 100, 1.0).unwrap();
+    display
+        .create_surface(3, "R", "r.app", 100, 100, 1.0)
+        .unwrap();
 
     let result = display.resize_surface(3, 200, 150);
     assert!(result.is_ok());
@@ -1390,7 +1394,9 @@ fn wayland_display_resize_surface() {
 fn wayland_display_resize_to_same_size_is_noop() {
     let _mock = ListeningDisplayMock::new();
     let mut display = remoteway_display::WaylandDisplay::new().unwrap();
-    display.create_surface(4, "S", "s.app", 50, 50, 1.0).unwrap();
+    display
+        .create_surface(4, "S", "s.app", 50, 50, 1.0)
+        .unwrap();
 
     let result = display.resize_surface(4, 50, 50);
     assert!(result.is_ok());
@@ -1428,7 +1434,9 @@ fn wayland_display_present_frame_to_nonexistent_surface() {
 fn wayland_display_present_frame_with_damage() {
     let _mock = ListeningDisplayMock::new();
     let mut display = remoteway_display::WaylandDisplay::new().unwrap();
-    display.create_surface(5, "P", "p.app", 64, 64, 1.0).unwrap();
+    display
+        .create_surface(5, "P", "p.app", 64, 64, 1.0)
+        .unwrap();
 
     let data = vec![0xABu8; 64 * 64 * 4];
     let damage = vec![remoteway_display::shm::DamageRegion::new(0, 0, 32, 32)];
@@ -1442,9 +1450,15 @@ fn wayland_display_present_frame_with_damage() {
 fn wayland_display_multiple_surfaces() {
     let _mock = ListeningDisplayMock::new();
     let mut display = remoteway_display::WaylandDisplay::new().unwrap();
-    display.create_surface(10, "A", "a.app", 100, 100, 1.0).unwrap();
-    display.create_surface(11, "B", "b.app", 200, 200, 1.0).unwrap();
-    display.create_surface(12, "C", "c.app", 300, 300, 1.0).unwrap();
+    display
+        .create_surface(10, "A", "a.app", 100, 100, 1.0)
+        .unwrap();
+    display
+        .create_surface(11, "B", "b.app", 200, 200, 1.0)
+        .unwrap();
+    display
+        .create_surface(12, "C", "c.app", 300, 300, 1.0)
+        .unwrap();
 
     assert!(display.get_surface(10).is_some());
     assert!(display.get_surface(11).is_some());

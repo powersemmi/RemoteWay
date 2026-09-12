@@ -445,7 +445,11 @@ impl PortalBackend {
         {
             let w = info.width();
             let h = info.height();
-            let s = info.stride().first().copied().unwrap_or((w * BYTES_PER_PIXEL) as i32);
+            let s = info
+                .stride()
+                .first()
+                .copied()
+                .unwrap_or((w * BYTES_PER_PIXEL) as i32);
             (w, h, s.max(0) as u32)
         } else {
             // No caps at all (shouldn't happen with our pipeline). Treat

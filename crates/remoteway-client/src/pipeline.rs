@@ -4,9 +4,9 @@ use std::time::Instant;
 
 use anyhow::Result;
 use remoteway_compress::delta::DamageRect;
-use remoteway_compress::pipeline::{CompressedFrame, decompress_frame_into};
 #[cfg(test)]
 use remoteway_compress::pipeline::decompress_frame;
+use remoteway_compress::pipeline::{CompressedFrame, decompress_frame_into};
 use remoteway_display::{DisplayFrame, DisplayThread};
 use remoteway_interpolate::{GpuFrame, InterpolationManager};
 use remoteway_proto::frame::{FrameMeta, WireRegion};
@@ -204,9 +204,9 @@ pub async fn recv_decompress_loop(
                 }
 
                 // Try to generate an interpolated frame at the temporal midpoint.
-                let interpolated = interpolation.as_mut().and_then(|im| {
-                    im.interpolate(0.5).ok().flatten()
-                });
+                let interpolated = interpolation
+                    .as_mut()
+                    .and_then(|im| im.interpolate(0.5).ok().flatten());
 
                 // Save as previous frame for next delta decode BEFORE moving into display.
                 previous_frame.clear();
@@ -230,7 +230,9 @@ pub async fn recv_decompress_loop(
                         );
                         {
                             let r = im.backend().upscale(&src, tw, th);
-                            if let Err(ref e) = r { debug!("gpu upscale failed: {}", e); }
+                            if let Err(ref e) = r {
+                                debug!("gpu upscale failed: {}", e);
+                            }
                             r.ok()
                         }
                     });
@@ -336,9 +338,9 @@ pub async fn recv_decompress_loop(
                     let (iw, ih, istride, idata) = if do_upscale {
                         let tw = (interp_frame.width as f64 * upscale_factor).round() as u32;
                         let th = (interp_frame.height as f64 * upscale_factor).round() as u32;
-                        let gpu_up = interpolation.as_ref().and_then(|im| {
-                            im.backend().upscale(&interp_frame, tw, th).ok()
-                        });
+                        let gpu_up = interpolation
+                            .as_ref()
+                            .and_then(|im| im.backend().upscale(&interp_frame, tw, th).ok());
                         if let Some(gpu) = gpu_up {
                             (gpu.width, gpu.height, gpu.stride, gpu.data)
                         } else {
@@ -348,17 +350,24 @@ pub async fn recv_decompress_loop(
                                 interp_frame.width,
                                 interp_frame.height,
                                 interp_frame.stride,
-                                tw, th,
+                                tw,
+                                th,
                                 &mut upscaled,
                             );
                             (uw, uh, us, upscaled)
                         }
                     } else {
-                        (interp_frame.width, interp_frame.height, interp_frame.stride, interp_frame.data)
+                        (
+                            interp_frame.width,
+                            interp_frame.height,
+                            interp_frame.stride,
+                            interp_frame.data,
+                        )
                     };
 
                     let full_damage = vec![remoteway_display::DamageRegion {
-                        x: 0, y: 0,
+                        x: 0,
+                        y: 0,
                         width: iw,
                         height: ih,
                     }];
@@ -463,27 +472,32 @@ pub fn upscale_bicubic(
 
     for dy in 0..dst_h {
         let sy = (dy as f64 + 0.5) * src_h as f64 / dst_h as f64 - 0.5;
-        let sy_floor = (sy.floor() as i32).max(0).min(src_h as i32 - 1);
+        // The kernel anchor may fall outside the image at the edges; only the
+        // sample indices are clamped, otherwise the whole kernel shifts by one
+        // sample and edge pixels bleed into their neighbors.
+        let sy_floor = sy.floor() as i32;
         let fy = sy - sy.floor();
 
         // Clamp source row indices for bicubic kernel.
-        let sy0 = (sy_floor - 1).max(0) as u32;
-        let sy1 = sy_floor as u32;
-        let sy2 = (sy_floor + 1).min(src_h as i32 - 1) as u32;
-        let sy3 = (sy_floor + 2).min(src_h as i32 - 1) as u32;
+        let clamp_y = |v: i32| v.clamp(0, src_h as i32 - 1) as u32;
+        let sy0 = clamp_y(sy_floor - 1);
+        let sy1 = clamp_y(sy_floor);
+        let sy2 = clamp_y(sy_floor + 1);
+        let sy3 = clamp_y(sy_floor + 2);
 
         let wy = cubic_weight(fy);
         let dst_row = (dy * dst_stride) as usize;
 
         for dx in 0..dst_w {
             let sx = (dx as f64 + 0.5) * src_w as f64 / dst_w as f64 - 0.5;
-            let sx_floor = (sx.floor() as i32).max(0).min(src_w as i32 - 1);
+            let sx_floor = sx.floor() as i32;
             let fx = sx - sx.floor();
 
-            let sx0 = (sx_floor - 1).max(0) as u32;
-            let sx1 = sx_floor as u32;
-            let sx2 = (sx_floor + 1).min(src_w as i32 - 1) as u32;
-            let sx3 = (sx_floor + 2).min(src_w as i32 - 1) as u32;
+            let clamp_x = |v: i32| v.clamp(0, src_w as i32 - 1) as u32;
+            let sx0 = clamp_x(sx_floor - 1);
+            let sx1 = clamp_x(sx_floor);
+            let sx2 = clamp_x(sx_floor + 1);
+            let sx3 = clamp_x(sx_floor + 2);
 
             let wx = cubic_weight(fx);
             let di = dst_row + (dx * 4) as usize;

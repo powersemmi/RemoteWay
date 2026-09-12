@@ -26,7 +26,7 @@ use remoteway_vulkan::{VideoCodec, VulkanContext};
 use crate::EncodeError;
 use crate::encoder::{EncodeParams, EncodedFrame, Encoder, FrameKind, InputFrame, RateControl};
 
-/// Two-slot DPB: one reference (LAST_FRAME) + one setup (current frame),
+/// Two-slot DPB: one reference (`LAST_FRAME`) + one setup (current frame),
 /// the bare minimum for an KEY-then-INTER-only low-latency loop.
 const DPB_SLOTS: u32 = 2;
 /// `VK_MAKE_VIDEO_STD_VERSION(1, 0, 0)`.
@@ -44,25 +44,27 @@ const OUTPUT_BUFFER_BYTES: u64 = 1024 * 1024;
 /// this as `7`.
 const STD_VIDEO_AV1_PRIMARY_REF_NONE: u8 = 7;
 
-/// Index in `referenceNameSlotIndices` for LAST_FRAME. AV1's seven reference
+/// Index in `referenceNameSlotIndices` for `LAST_FRAME`. AV1's seven reference
 /// names map to indices 0..7 in this Vulkan array.
 const REF_NAME_LAST_FRAME: usize = 0;
 
 /// AV1 spec: `refresh_frame_flags` is an 8-bit mask of which of the 8 AV1
 /// saved-frame buffer slots get updated by this frame. We always refresh
-/// slot 0 (writing into LAST_FRAME), keeping the single-reference loop
+/// slot 0 (writing into `LAST_FRAME`), keeping the single-reference loop
 /// simple.
 const REFRESH_LAST_FRAME_ONLY: u8 = 0x01;
 
 pub struct Av1Encoder {
     ctx: Arc<VulkanContext>,
     params: EncodeParams,
+    #[allow(dead_code)]
     encode_queue_family: u32,
     encode_queue: vk::Queue,
 
     video_queue: ash::khr::video_queue::Device,
     video_encode: ash::khr::video_encode_queue::Device,
 
+    #[allow(dead_code)]
     profile: ProfileChain,
 
     session: vk::VideoSessionKHR,
@@ -76,15 +78,15 @@ pub struct Av1Encoder {
 
     dpb: Vec<DpbSlot>,
     /// Index of the slot the previous KEY/INTER was written to. Next frame
-    /// uses this as its LAST_FRAME reference; the new frame is written to
+    /// uses this as its `LAST_FRAME` reference; the new frame is written to
     /// the *other* slot. `None` until the first frame has been encoded.
     prior_ref_slot: Option<usize>,
 
     out_buffer: vk::Buffer,
     out_buffer_memory: vk::DeviceMemory,
 
-    /// 1 query × 2 u32 components per frame: BITSTREAM_BUFFER_OFFSET (bit 0)
-    /// and BITSTREAM_BYTES_WRITTEN (bit 1).
+    /// 1 query × 2 u32 components per frame: `BITSTREAM_BUFFER_OFFSET` (bit 0)
+    /// and `BITSTREAM_BYTES_WRITTEN` (bit 1).
     query_pool: vk::QueryPool,
 
     encode_cmd_pool: vk::CommandPool,
@@ -92,8 +94,8 @@ pub struct Av1Encoder {
     encode_fence: vk::Fence,
 
     frame_index: u64,
-    /// AV1 per-frame counter (used for order_hint, wraps at 2^OrderHintBits).
-    /// We use the default 8-bit order_hint, so wraps at 256.
+    /// AV1 per-frame counter (used for `order_hint`, wraps at 2^OrderHintBits).
+    /// We use the default 8-bit `order_hint`, so wraps at 256.
     order_hint: u8,
     force_keyframe: bool,
 
@@ -112,8 +114,10 @@ struct DpbSlot {
 /// of the encoder (the driver re-reads them on every `vkCmdBeginVideoCodingKHR`
 /// via the video session's stored profile).
 struct ProfileChain {
+    #[allow(dead_code)]
     av1: Box<vk::VideoEncodeAV1ProfileInfoKHR<'static>>,
     profile: Box<vk::VideoProfileInfoKHR<'static>>,
+    #[allow(dead_code)]
     profile_list: Box<vk::VideoProfileListInfoKHR<'static>>,
 }
 
@@ -134,8 +138,7 @@ impl ProfileChain {
         profile.p_next =
             &*av1 as *const vk::VideoEncodeAV1ProfileInfoKHR<'_> as *const std::ffi::c_void;
 
-        let mut profile_list: Box<vk::VideoProfileListInfoKHR<'static>> =
-            Box::new(vk::VideoProfileListInfoKHR::default());
+        let mut profile_list: Box<vk::VideoProfileListInfoKHR<'static>> = Box::default();
         profile_list.profile_count = 1;
         profile_list.p_profiles = &*profile;
 
@@ -404,7 +407,7 @@ impl Encoder for Av1Encoder {
         // RADV (VCN5+) dereferences `pic->pCDEF` directly when
         // `seq->flags.enable_cdef = 1`. Provide a reasonable CDEF struct
         // (values taken from NVidia's vk_video_samples reference encoder).
-        let cdef = vkn::StdVideoAV1CDEF {
+        let _cdef = vkn::StdVideoAV1CDEF {
             cdef_damping_minus_3: 2,
             cdef_bits: 2,
             cdef_y_pri_strength: [0, 2, 4, 9, 0, 0, 0, 0],
@@ -425,7 +428,11 @@ impl Encoder for Av1Encoder {
             primary_ref_frame,
             // refresh_frame_flags: 0xff for KEY (spec-required), 0x01 for
             // INTER (only LAST_FRAME slot used in single-ref low-latency).
-            refresh_frame_flags: if is_key { 0xff } else { REFRESH_LAST_FRAME_ONLY },
+            refresh_frame_flags: if is_key {
+                0xff
+            } else {
+                REFRESH_LAST_FRAME_ONLY
+            },
             coded_denom: 0,
             render_width_minus_1: (self.params.width - 1) as u16,
             render_height_minus_1: (self.params.height - 1) as u16,
@@ -543,7 +550,6 @@ impl Encoder for Av1Encoder {
                     .push(&mut ref_av1_slot),
             );
         } else {
-            ref_std_ref = unsafe { std::mem::zeroed() };
             ref_av1 = vk::VideoEncodeAV1DpbSlotInfoKHR::default();
             ref_av1_slot = ref_av1;
             ref_pic_resource = vk::VideoPictureResourceInfoKHR::default();
@@ -929,9 +935,9 @@ fn build_seq_header(width: u32, height: u32) -> SeqHeaderStorage {
         max_frame_height_minus_1: (height - 1) as u16,
         delta_frame_id_length_minus_2: 0,
         additional_frame_id_length_minus_1: 0,
-        order_hint_bits_minus_1: 7, // OrderHintBits = 8
-        seq_force_integer_mv: 2,            // STD_VIDEO_AV1_SELECT_INTEGER_MV
-        seq_force_screen_content_tools: 2,  // STD_VIDEO_AV1_SELECT_SCREEN_CONTENT_TOOLS
+        order_hint_bits_minus_1: 7,        // OrderHintBits = 8
+        seq_force_integer_mv: 2,           // STD_VIDEO_AV1_SELECT_INTEGER_MV
+        seq_force_screen_content_tools: 2, // STD_VIDEO_AV1_SELECT_SCREEN_CONTENT_TOOLS
         reserved1: [0; 5],
         pColorConfig: &*color,
         pTimingInfo: std::ptr::null(),
@@ -943,9 +949,9 @@ fn build_seq_header(width: u32, height: u32) -> SeqHeaderStorage {
     }
 }
 
-/// Returns the number of bits needed to represent `value` (1..=u32::MAX).
+/// Returns the number of bits needed to represent `value` (`1..=u32::MAX`).
 /// AV1 spec: `frame_width_bits_minus_1 = ceil(log2(max_frame_width)) - 1`.
-/// For 1920 this returns 11 (so minus_1 = 10).
+/// For 1920 this returns 11 (so `minus_1` = 10).
 fn bits_needed(value: u32) -> u32 {
     let v = value.max(1);
     let bits = 32 - (v - 1).leading_zeros();

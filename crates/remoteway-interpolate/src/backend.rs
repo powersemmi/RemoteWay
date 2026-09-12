@@ -101,9 +101,7 @@ impl BackendDetector {
             )),
             #[cfg(feature = "fsr3")]
             BackendKind::Fsr3 => {
-                match crate::backends::fsr3::Fsr3Interpolator::new(
-                    1280, 720, 1920, 1080,
-                ) {
+                match crate::backends::fsr3::Fsr3Interpolator::new(1280, 720, 1920, 1080) {
                     Ok(backend) => Ok(Box::new(backend)),
                     #[cfg(feature = "fsr2")]
                     Err(e) => {

@@ -168,16 +168,15 @@ pub fn psnr_y(a: &DecodedFrame, b: &DecodedFrame) -> f64 {
     );
     assert_eq!(a.y.len(), b.y.len(), "psnr_y: y-plane length mismatch");
 
-    let mse: f64 = a
-        .y
-        .iter()
-        .zip(b.y.iter())
-        .map(|(x, y)| {
-            let diff = i32::from(*x) - i32::from(*y);
-            f64::from(diff * diff)
-        })
-        .sum::<f64>()
-        / a.y.len() as f64;
+    let mse: f64 =
+        a.y.iter()
+            .zip(b.y.iter())
+            .map(|(x, y)| {
+                let diff = i32::from(*x) - i32::from(*y);
+                f64::from(diff * diff)
+            })
+            .sum::<f64>()
+            / a.y.len() as f64;
 
     if mse == 0.0 {
         f64::INFINITY

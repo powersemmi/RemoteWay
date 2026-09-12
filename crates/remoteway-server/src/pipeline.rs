@@ -171,7 +171,7 @@ fn downscale_box(
 
                 // count >= 1 because we clamped sx1 >= sx0+1 and sy1 >= sy0+1.
                 let di = (dx * 4) as usize;
-                row_buf[di]     = (acc_r / count) as u8;
+                row_buf[di] = (acc_r / count) as u8;
                 row_buf[di + 1] = (acc_g / count) as u8;
                 row_buf[di + 2] = (acc_b / count) as u8;
                 row_buf[di + 3] = (acc_a / count) as u8;
@@ -341,9 +341,7 @@ pub fn compress_send_loop(
         // Drain the capture ring to the LATEST frame. Intermediate frames
         // are stale — processing them would only add pipeline latency.
         let mut frame = match capture.try_recv() {
-            Some(f) => {
-                f
-            }
+            Some(f) => f,
             None => {
                 if capture.is_finished() {
                     info!("capture thread finished, signalling shutdown");
@@ -719,10 +717,7 @@ mod tests {
         // Top-left dst = avg(10,30,20,40) = 25. Top-right dst = avg(50,70,60,80) = 65.
         // Bottom-left = avg(90,110,100,120) = 105. Bottom-right = avg(130,150,140,160) = 145.
         let pattern: [u8; 16] = [
-            10, 30, 50, 70,
-            20, 40, 60, 80,
-            90, 110, 130, 150,
-            100, 120, 140, 160,
+            10, 30, 50, 70, 20, 40, 60, 80, 90, 110, 130, 150, 100, 120, 140, 160,
         ];
         let (sw, sh) = (4u32, 4u32);
         let stride = sw * 4;
@@ -744,8 +739,8 @@ mod tests {
         assert_eq!(dst_stride, 8);
         assert_eq!(dst.len(), 16);
         // R channel of each dst pixel == averaged greyscale value.
-        assert_eq!(dst[0], 25);  // top-left
-        assert_eq!(dst[4], 65);  // top-right
+        assert_eq!(dst[0], 25); // top-left
+        assert_eq!(dst[4], 65); // top-right
         assert_eq!(dst[8], 105); // bottom-left
         assert_eq!(dst[12], 145); // bottom-right
         // Alpha preserved at 255.

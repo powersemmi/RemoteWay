@@ -24,7 +24,12 @@ pub enum InterpolateError {
     InterpolateFailed(String),
 }
 
-#[cfg(any(feature = "fsr2", feature = "fsr3", feature = "fsr2-rife", feature = "fsr2-native"))]
+#[cfg(any(
+    feature = "fsr2",
+    feature = "fsr3",
+    feature = "fsr2-rife",
+    feature = "fsr2-native"
+))]
 impl From<remoteway_vulkan::VulkanError> for InterpolateError {
     fn from(e: remoteway_vulkan::VulkanError) -> Self {
         use remoteway_vulkan::VulkanError as V;

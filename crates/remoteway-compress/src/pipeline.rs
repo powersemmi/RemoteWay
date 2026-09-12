@@ -152,10 +152,8 @@ pub fn decompress_frame_into(
             &compressed.data[start..end]
         })
         .collect();
-    let decoded: Vec<Result<Vec<u8>, CompressorError>> = blobs
-        .par_iter()
-        .map(|blob| kind.decompress(blob))
-        .collect();
+    let decoded: Vec<Result<Vec<u8>, CompressorError>> =
+        blobs.par_iter().map(|blob| kind.decompress(blob)).collect();
 
     // Serially flatten the per-region deltas (delta_decode expects them
     // concatenated in region order).

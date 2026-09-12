@@ -132,18 +132,15 @@ impl VulkanContext {
     /// family (preferring fewer families when one covers multiple entries).
     /// The encode crate uses this to obtain both a compute and a video
     /// encode queue from the same device.
-    pub fn with_request(
-        request: &QueueRequest,
-        extensions: &[&CStr],
-    ) -> Result<Self, VulkanError> {
+    pub fn with_request(request: &QueueRequest, extensions: &[&CStr]) -> Result<Self, VulkanError> {
         if request.queues.is_empty() {
             return Err(VulkanError::NoSuitableQueue(
                 "QueueRequest must include at least one queue".into(),
             ));
         }
 
-        let entry = unsafe { ash::Entry::load() }
-            .map_err(|e| VulkanError::LoaderFailed(format!("{e}")))?;
+        let entry =
+            unsafe { ash::Entry::load() }.map_err(|e| VulkanError::LoaderFailed(format!("{e}")))?;
 
         let app_info = vk::ApplicationInfo::default()
             .application_name(c"remoteway")
@@ -154,9 +151,7 @@ impl VulkanContext {
 
         // Opt-in validation layer when REMOTEWAY_VK_VALIDATION=1 is set.
         // Useful for diagnosing video-encode-time DEVICE_LOST issues.
-        let want_validation = std::env::var("REMOTEWAY_VK_VALIDATION")
-            .ok()
-            .as_deref() == Some("1");
+        let want_validation = std::env::var("REMOTEWAY_VK_VALIDATION").ok().as_deref() == Some("1");
         let layer_names: Vec<*const i8> = if want_validation {
             vec![c"VK_LAYER_KHRONOS_validation".as_ptr() as *const _]
         } else {
@@ -297,8 +292,8 @@ impl VulkanContext {
         let pool_info = vk::CommandPoolCreateInfo::default()
             .queue_family_index(compute_family)
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-        let command_pool = unsafe { device.create_command_pool(&pool_info, None) }
-            .map_err(|e| {
+        let command_pool =
+            unsafe { device.create_command_pool(&pool_info, None) }.map_err(|e| {
                 unsafe {
                     device.destroy_device(None);
                     instance.destroy_instance(None);
@@ -458,8 +453,7 @@ impl VulkanContext {
         profile: &vk::VideoProfileInfoKHR<'_>,
         caps: &mut vk::VideoCapabilitiesKHR<'_>,
     ) -> Result<VideoEncodeCapabilities, VulkanError> {
-        let video_queue_fn =
-            ash::khr::video_queue::Instance::load(&self._entry, &self.instance);
+        let video_queue_fn = ash::khr::video_queue::Instance::load(&self._entry, &self.instance);
 
         unsafe {
             video_queue_fn.get_physical_device_video_capabilities(
@@ -957,8 +951,16 @@ mod tests {
     fn queue_request_compute_and_encode_lists_both() {
         let req = QueueRequest::compute_and_encode(VideoCodec::H265);
         assert_eq!(req.queues.len(), 2);
-        assert!(req.queues.iter().any(|c| c.contains(QueueCapabilities::COMPUTE)));
-        assert!(req.queues.iter().any(|c| c.contains(QueueCapabilities::VIDEO_ENCODE)));
+        assert!(
+            req.queues
+                .iter()
+                .any(|c| c.contains(QueueCapabilities::COMPUTE))
+        );
+        assert!(
+            req.queues
+                .iter()
+                .any(|c| c.contains(QueueCapabilities::VIDEO_ENCODE))
+        );
         assert_eq!(req.video_codecs, vec![VideoCodec::H265]);
     }
 
@@ -982,10 +984,8 @@ mod tests {
     #[test]
     #[ignore] // requires Vulkan runtime + a video-encode-capable device
     fn vulkan_context_with_video_encode() {
-        let ctx = VulkanContext::with_request(
-            &QueueRequest::compute_and_encode(VideoCodec::H265),
-            &[],
-        );
+        let ctx =
+            VulkanContext::with_request(&QueueRequest::compute_and_encode(VideoCodec::H265), &[]);
         let ctx = ctx.expect("failed to create encode context");
         assert!(ctx.video_encode_queue.is_some(), "no video encode queue");
         assert!(ctx.video_encode_queue_family.is_some());
@@ -994,11 +994,9 @@ mod tests {
     #[test]
     #[ignore] // requires Vulkan runtime + a video-encode-capable device
     fn probe_h265_capabilities() {
-        let ctx = VulkanContext::with_request(
-            &QueueRequest::compute_and_encode(VideoCodec::H265),
-            &[],
-        )
-        .expect("encode context");
+        let ctx =
+            VulkanContext::with_request(&QueueRequest::compute_and_encode(VideoCodec::H265), &[])
+                .expect("encode context");
         let caps = ctx
             .probe_video_encode_capabilities(VideoCodec::H265)
             .expect("h265 caps");
@@ -1014,11 +1012,9 @@ mod tests {
     #[test]
     #[ignore] // requires Vulkan runtime + a video-encode-capable device
     fn probe_h264_capabilities() {
-        let ctx = VulkanContext::with_request(
-            &QueueRequest::compute_and_encode(VideoCodec::H264),
-            &[],
-        )
-        .expect("encode context");
+        let ctx =
+            VulkanContext::with_request(&QueueRequest::compute_and_encode(VideoCodec::H264), &[])
+                .expect("encode context");
         let caps = ctx
             .probe_video_encode_capabilities(VideoCodec::H264)
             .expect("h264 caps");
@@ -1029,11 +1025,9 @@ mod tests {
     #[test]
     #[ignore] // requires Vulkan runtime + a video-encode-capable device + AV1 support
     fn probe_av1_capabilities() {
-        let ctx = VulkanContext::with_request(
-            &QueueRequest::compute_and_encode(VideoCodec::Av1),
-            &[],
-        )
-        .expect("encode context");
+        let ctx =
+            VulkanContext::with_request(&QueueRequest::compute_and_encode(VideoCodec::Av1), &[])
+                .expect("encode context");
         let caps = ctx
             .probe_video_encode_capabilities(VideoCodec::Av1)
             .expect("av1 caps");

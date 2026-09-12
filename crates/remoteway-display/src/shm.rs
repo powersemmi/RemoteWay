@@ -77,7 +77,7 @@ impl ShmFrameUploader {
         // Create memfd.
         let fd = nix::sys::memfd::memfd_create(
             c"remoteway-display-shm",
-            nix::sys::memfd::MemFdCreateFlag::MFD_CLOEXEC,
+            nix::sys::memfd::MFdFlags::MFD_CLOEXEC,
         )
         .map_err(|e| DisplayError::ShmBuffer(format!("memfd_create failed: {e}")))?;
 

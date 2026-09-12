@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::os::fd::OwnedFd;
 
-use nix::sys::memfd::{MemFdCreateFlag, memfd_create};
+use nix::sys::memfd::{MFdFlags, memfd_create};
 
 use crate::error::InputError;
 
@@ -148,7 +148,7 @@ pub const DEFAULT_KEYMAP: &str = r#"xkb_keymap {
 pub fn create_keymap_fd(keymap: &str) -> Result<(OwnedFd, u32), InputError> {
     let fd = memfd_create(
         c"remoteway-keymap",
-        MemFdCreateFlag::MFD_CLOEXEC | MemFdCreateFlag::MFD_ALLOW_SEALING,
+        MFdFlags::MFD_CLOEXEC | MFdFlags::MFD_ALLOW_SEALING,
     )
     .map_err(|e| InputError::Keymap(format!("memfd_create: {e}")))?;
 

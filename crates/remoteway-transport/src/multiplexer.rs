@@ -142,11 +142,7 @@ impl StreamParser {
         buf.extend_from_slice(&payload);
 
         if is_last {
-            let full_payload = self
-                .chunks
-                .remove(&stream_id)
-                .unwrap_or_default()
-                .freeze();
+            let full_payload = self.chunks.remove(&stream_id).unwrap_or_default().freeze();
             Ok(Some(IncomingMessage {
                 header: hdr,
                 payload: full_payload,
@@ -311,7 +307,8 @@ mod tests {
         for sid in 0..32u16 {
             let expected = format!("s{sid}-1-s{sid}-2");
             assert!(
-                msgs.iter().any(|m| m.payload.as_ref() == expected.as_bytes()),
+                msgs.iter()
+                    .any(|m| m.payload.as_ref() == expected.as_bytes()),
                 "missing reassembled message for stream {sid}"
             );
         }

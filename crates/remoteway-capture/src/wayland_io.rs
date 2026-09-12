@@ -61,10 +61,7 @@ pub fn dispatch_with_deadline<S>(
         }
 
         let fd = read_guard.connection_fd().as_raw_fd();
-        let timeout_ms: libc::c_int = remaining
-            .as_millis()
-            .try_into()
-            .unwrap_or(libc::c_int::MAX);
+        let timeout_ms: libc::c_int = remaining.as_millis().try_into().unwrap_or(libc::c_int::MAX);
 
         let mut pfd = libc::pollfd {
             fd,

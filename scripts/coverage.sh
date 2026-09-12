@@ -6,18 +6,27 @@
 
 set -euo pipefail
 
+# The GPU crates (Vulkan context and the video encoder backends) can only be
+# exercised on a machine with a GPU, so they are excluded from the CI gate;
+# the threshold applies to the code that the test suite can actually reach.
+EXCLUDE=(
+    --exclude remoteway-vulkan
+    --exclude remoteway-encode
+    --ignore-filename-regex 'crates/remoteway-(vulkan|encode)/'
+)
+
 HTML=0
 for arg in "$@"; do
     [[ "$arg" == "--html" ]] && HTML=1
 done
 
 if [[ $HTML -eq 1 ]]; then
-    cargo llvm-cov --workspace --html
+    cargo llvm-cov --workspace "${EXCLUDE[@]}" --html
     echo "HTML report: target/llvm-cov/html/index.html"
 fi
 
 # Summary output — check threshold.
-OUTPUT=$(cargo llvm-cov --workspace --summary-only 2>&1)
+OUTPUT=$(cargo llvm-cov --workspace "${EXCLUDE[@]}" --summary-only 2>&1)
 echo "$OUTPUT"
 
 # Extract the "TOTAL" line coverage percentage (10th field).
