@@ -14,8 +14,8 @@
 pub mod fixtures;
 pub mod validator;
 
-pub use validator::{decode_bitstream, psnr_y, DecodedFrame, ValidatorError};
-pub use fixtures::{gradient_nv12, checkerboard_nv12, text_like_nv12, Fixture};
+pub use fixtures::{Fixture, checkerboard_nv12, gradient_nv12, text_like_nv12};
+pub use validator::{DecodedFrame, ValidatorError, decode_bitstream, psnr_y};
 
 /// Generates the standard encoder contract test suite for a single codec
 /// backend.
@@ -46,19 +46,16 @@ macro_rules! encoder_contract_tests {
         #[cfg(test)]
         #[allow(unused_imports)]
         mod $module {
+            use ::remoteway_vulkan::{QueueRequest, VideoCodec, VulkanContext};
             use std::sync::Arc;
+            use $crate::EncodeError;
             use $crate::encoder::{EncodeParams, Encoder, FrameKind, InputFrame, RateControl};
             use $crate::test_support::*;
-            use $crate::EncodeError;
-            use ::remoteway_vulkan::{QueueRequest, VideoCodec, VulkanContext};
 
             fn make_ctx() -> Arc<VulkanContext> {
                 Arc::new(
-                    VulkanContext::with_request(
-                        &QueueRequest::compute_and_encode($codec),
-                        &[],
-                    )
-                    .expect("video encode context"),
+                    VulkanContext::with_request(&QueueRequest::compute_and_encode($codec), &[])
+                        .expect("video encode context"),
                 )
             }
 
@@ -84,8 +81,13 @@ macro_rules! encoder_contract_tests {
                 } else {
                     VideoCodec::H264
                 };
-                let err = <$encoder_ty as Encoder>::new(ctx, params).err().expect("must reject");
-                assert!(matches!(err, EncodeError::InvalidParams(_) | EncodeError::UnsupportedCodec { .. }));
+                let err = <$encoder_ty as Encoder>::new(ctx, params)
+                    .err()
+                    .expect("must reject");
+                assert!(matches!(
+                    err,
+                    EncodeError::InvalidParams(_) | EncodeError::UnsupportedCodec { .. }
+                ));
             }
 
             #[test]
@@ -105,13 +107,14 @@ macro_rules! encoder_contract_tests {
                 let ctx = make_ctx();
                 let params = make_params(1280, 720);
                 let mut fixture = Fixture::gradient(1280, 720);
-                fixture
-                    .upload(ctx.clone(), $codec)
-                    .expect("fixture upload");
+                fixture.upload(ctx.clone(), $codec).expect("fixture upload");
                 let mut enc = <$encoder_ty as Encoder>::new(ctx, params).expect("encoder");
                 let frame = enc.encode(fixture.as_input_frame(0)).expect("encode");
                 assert_eq!(frame.kind, FrameKind::Idr, "first frame must be IDR");
-                assert!(frame.parameter_sets.is_some(), "IDR must include parameter sets");
+                assert!(
+                    frame.parameter_sets.is_some(),
+                    "IDR must include parameter sets"
+                );
                 assert!(!frame.data.is_empty(), "IDR must produce bytes");
             }
 
@@ -121,14 +124,15 @@ macro_rules! encoder_contract_tests {
                 let ctx = make_ctx();
                 let params = make_params(1280, 720);
                 let mut fixture = Fixture::gradient(1280, 720);
-                fixture
-                    .upload(ctx.clone(), $codec)
-                    .expect("fixture upload");
+                fixture.upload(ctx.clone(), $codec).expect("fixture upload");
                 let mut enc = <$encoder_ty as Encoder>::new(ctx, params).expect("encoder");
                 let _idr = enc.encode(fixture.as_input_frame(0)).expect("idr");
                 let p = enc.encode(fixture.as_input_frame(1)).expect("p");
                 assert_eq!(p.kind, FrameKind::P, "second frame must be P");
-                assert!(p.parameter_sets.is_none(), "P frames must NOT carry parameter sets");
+                assert!(
+                    p.parameter_sets.is_none(),
+                    "P frames must NOT carry parameter sets"
+                );
             }
 
             #[test]
@@ -137,15 +141,17 @@ macro_rules! encoder_contract_tests {
                 let ctx = make_ctx();
                 let params = make_params(1280, 720);
                 let mut fixture = Fixture::gradient(1280, 720);
-                fixture
-                    .upload(ctx.clone(), $codec)
-                    .expect("fixture upload");
+                fixture.upload(ctx.clone(), $codec).expect("fixture upload");
                 let mut enc = <$encoder_ty as Encoder>::new(ctx, params).expect("encoder");
                 let _idr = enc.encode(fixture.as_input_frame(0)).expect("idr");
                 let _p = enc.encode(fixture.as_input_frame(1)).expect("p");
                 enc.request_keyframe();
                 let forced = enc.encode(fixture.as_input_frame(2)).expect("forced idr");
-                assert_eq!(forced.kind, FrameKind::Idr, "request_keyframe must force IDR on next");
+                assert_eq!(
+                    forced.kind,
+                    FrameKind::Idr,
+                    "request_keyframe must force IDR on next"
+                );
                 assert!(forced.parameter_sets.is_some());
             }
 
@@ -155,9 +161,7 @@ macro_rules! encoder_contract_tests {
                 let ctx = make_ctx();
                 let params = make_params(1280, 720);
                 let mut fixture = Fixture::gradient(1280, 720);
-                fixture
-                    .upload(ctx.clone(), $codec)
-                    .expect("fixture upload");
+                fixture.upload(ctx.clone(), $codec).expect("fixture upload");
                 let mut enc = <$encoder_ty as Encoder>::new(ctx, params).expect("encoder");
 
                 // Encode 3 frames (IDR + 2 P) and concatenate the Annex-B / OBU stream.
@@ -201,9 +205,7 @@ macro_rules! encoder_contract_tests {
                 let ctx = make_ctx();
                 let params = make_params(1280, 720);
                 let mut fixture = Fixture::gradient(1280, 720);
-                fixture
-                    .upload(ctx.clone(), $codec)
-                    .expect("fixture upload");
+                fixture.upload(ctx.clone(), $codec).expect("fixture upload");
                 let mut enc = <$encoder_ty as Encoder>::new(ctx, params).expect("encoder");
                 let mut stream: Vec<u8> = Vec::new();
                 for i in 0..3 {

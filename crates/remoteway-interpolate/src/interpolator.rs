@@ -90,8 +90,12 @@ pub trait FrameInterpolator: Send + Sync {
     /// Returns [`InterpolateError::InvalidFactor`] if `t` is outside `0.0..=1.0`,
     /// [`InterpolateError::DimensionMismatch`] if frames differ in size, or
     /// [`InterpolateError::InterpolateFailed`] on GPU/compute errors.
-    fn interpolate(&mut self, a: &GpuFrame, b: &GpuFrame, t: f32)
-    -> Result<GpuFrame, InterpolateError>;
+    fn interpolate(
+        &mut self,
+        a: &GpuFrame,
+        b: &GpuFrame,
+        t: f32,
+    ) -> Result<GpuFrame, InterpolateError>;
 
     /// Spatially upscale a single frame to `dst_w×dst_h`.
     ///

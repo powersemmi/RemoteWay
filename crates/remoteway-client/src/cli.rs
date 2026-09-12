@@ -194,7 +194,13 @@ mod tests {
         let cmd = cli.ssh_command();
         assert_eq!(
             cmd,
-            vec!["ssh", "user@host", "remoteway-server", "--capture-fps", "100"]
+            vec![
+                "ssh",
+                "user@host",
+                "remoteway-server",
+                "--capture-fps",
+                "100"
+            ]
         );
     }
 

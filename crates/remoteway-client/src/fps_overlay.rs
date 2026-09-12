@@ -13,21 +13,51 @@ const GLYPH_H: usize = 7;
 /// (bit 4 = leftmost column, bit 0 = rightmost). `None` = missing glyph.
 fn glyph(c: char) -> Option<[u8; GLYPH_H]> {
     match c {
-        '0' => Some([0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110]),
-        '1' => Some([0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110]),
-        '2' => Some([0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111]),
-        '3' => Some([0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110]),
-        '4' => Some([0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010]),
-        '5' => Some([0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110]),
-        '6' => Some([0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110]),
-        '7' => Some([0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000]),
-        '8' => Some([0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110]),
-        '9' => Some([0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100]),
-        '.' => Some([0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100]),
-        ':' => Some([0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000]),
-        'F' => Some([0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000]),
-        'P' => Some([0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000]),
-        'S' => Some([0b01110, 0b10001, 0b10000, 0b01110, 0b00001, 0b10001, 0b01110]),
+        '0' => Some([
+            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+        ]),
+        '1' => Some([
+            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ]),
+        '2' => Some([
+            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
+        ]),
+        '3' => Some([
+            0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
+        ]),
+        '4' => Some([
+            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+        ]),
+        '5' => Some([
+            0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110,
+        ]),
+        '6' => Some([
+            0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
+        ]),
+        '7' => Some([
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+        ]),
+        '8' => Some([
+            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+        ]),
+        '9' => Some([
+            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100,
+        ]),
+        '.' => Some([
+            0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100,
+        ]),
+        ':' => Some([
+            0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000,
+        ]),
+        'F' => Some([
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
+        ]),
+        'P' => Some([
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
+        ]),
+        'S' => Some([
+            0b01110, 0b10001, 0b10000, 0b01110, 0b00001, 0b10001, 0b01110,
+        ]),
         ' ' => Some([0; GLYPH_H]),
         _ => None,
     }
@@ -43,15 +73,7 @@ pub const TEXT_SCALE: usize = 3;
 const PAD: usize = 4;
 
 /// Write a single RGBA8 pixel at `(x, y)` if it falls inside the buffer.
-fn put_pixel(
-    buf: &mut [u8],
-    width: u32,
-    height: u32,
-    stride: u32,
-    x: i32,
-    y: i32,
-    rgba: [u8; 4],
-) {
+fn put_pixel(buf: &mut [u8], width: u32, height: u32, stride: u32, x: i32, y: i32, rgba: [u8; 4]) {
     if x < 0 || y < 0 {
         return;
     }
@@ -68,15 +90,7 @@ fn put_pixel(
 /// Render `text` at pixel `(x, y)` on an RGBA8 buffer of size
 /// `width × height` with `stride` bytes per row. Draws a semi-opaque black
 /// background rectangle behind the text for legibility on any content.
-fn draw_text(
-    buf: &mut [u8],
-    width: u32,
-    height: u32,
-    stride: u32,
-    x: i32,
-    y: i32,
-    text: &str,
-) {
+fn draw_text(buf: &mut [u8], width: u32, height: u32, stride: u32, x: i32, y: i32, text: &str) {
     let text_px_w = text.chars().count() * GLYPH_STRIDE * TEXT_SCALE;
     let text_px_h = GLYPH_H * TEXT_SCALE;
     let bg_w = text_px_w as i32 + PAD as i32 * 2;

@@ -75,8 +75,16 @@ impl CaptureThread {
         let thread_config =
             ThreadConfig::new(config.core_id, config.sched_priority, "capture-thread");
 
-        let join_handle = thread_config
-            .spawn(move || capture_loop(&mut *backend, producer, &stop, &dropped, &fin, config.capture_fps))?;
+        let join_handle = thread_config.spawn(move || {
+            capture_loop(
+                &mut *backend,
+                producer,
+                &stop,
+                &dropped,
+                &fin,
+                config.capture_fps,
+            )
+        })?;
 
         Ok(Self {
             consumer,
@@ -155,9 +163,7 @@ fn capture_loop(
     capture_fps: u32,
 ) -> Result<(), CaptureError> {
     // Compute frame interval from capture FPS (clamped 10–500).
-    let min_interval = std::time::Duration::from_secs_f64(
-        1.0 / capture_fps.clamp(10, 500) as f64,
-    );
+    let min_interval = std::time::Duration::from_secs_f64(1.0 / capture_fps.clamp(10, 500) as f64);
 
     let result = (|| {
         // Subtract one interval so the first captured frame is always pushed,

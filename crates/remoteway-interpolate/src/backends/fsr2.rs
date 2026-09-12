@@ -345,10 +345,8 @@ impl Fsr2Interpolator {
         // its `display_size` matches the real output texture). The dim
         // hints here are unused. `.ok()` so a missing FSR-capable driver
         // gracefully degrades to the in-crate EASU+RCAS fallback.
-        let native_upscaler = super::fsr2_native::Fsr2NativeInterpolator::with_context(
-            ctx.clone(), 0, 0, 0, 0,
-        )
-        .ok();
+        let native_upscaler =
+            super::fsr2_native::Fsr2NativeInterpolator::with_context(ctx.clone(), 0, 0, 0, 0).ok();
 
         Ok(Self {
             ctx,
